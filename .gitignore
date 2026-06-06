@@ -1,0 +1,35 @@
+# Python virtual environments
+venv/
+backend/venv/
+ENV/
+env/
+.venv/
+ENV/
+*.pyc
+__pycache__/
+
+# Node modules
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Databases and large data files
+*.db
+*.sqlite
+backend/alphahunter.db
+backend/data/*.csv
+backend/data/*.joblib
+backend/data/*.json
+!backend/data/retraining_history.json # Keep structural history if needed, or ignore all
+
+# OS specific files
+.DS_Store
+Thumbs.db
+*.stackdump
+
+# Logs and status
+backend/data/status.json
+*.log
+.system_generated/
+.gemini/

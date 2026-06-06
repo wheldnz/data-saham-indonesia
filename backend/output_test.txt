@@ -1,0 +1,23 @@
+Sending request to Wikipedia...
+Request complete. Length of HTML: 1683897
+Parsing HTML with pandas StringIO...
+Success! Tables found: 1
+Table 0 has code column: Kode, size: (941, 7)
+Raw codes sample:
+Row 0: BEI: AALI
+Row 1: BEI: ABBA
+Row 2: BEI: ABDA
+Total tickers parsed: 941
+First 5 tickers:
+{'ticker': 'AALI', 'name': 'Astra Agro Lestari Tbk.', 'sector': 'Consumer Non-Cyclicals'}
+{'ticker': 'ABBA', 'name': 'Mahaka Media Tbk.', 'sector': 'Consumer Cyclicals'}
+{'ticker': 'ABDA', 'name': 'Asuransi Bina Dana Arta Tbk.', 'sector': 'Financials'}
+{'ticker': 'ABMM', 'name': 'ABM Investama Tbk.', 'sector': 'Energy'}
+{'ticker': 'ACES', 'name': 'Aspirasi Hidup Indonesia Tbk.', 'sector': 'Consumer Cyclicals'}
+Last 5 tickers:
+{'ticker': 'ZATA', 'name': 'Bersama Zatta Jaya Tbk.', 'sector': 'Consumer Cyclicals'}
+{'ticker': 'ZBRA', 'name': 'Dosni Roha Indonesia Tbk.', 'sector': 'Industrials'}
+{'ticker': 'ZINC', 'name': 'Kapuas Prima Coal Tbk.', 'sector': 'Basic Materials'}
+{'ticker': 'ZONE', 'name': 'Mega Perintis Tbk.', 'sector': 'Consumer Cyclicals'}
+{'ticker': 'ZYRX', 'name': 'Zyrexindo Mandiri Buana Tbk.', 'sector': 'Technology'}
+Script end.
