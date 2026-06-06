@@ -33,3 +33,8 @@ backend/data/status.json
 *.log
 .system_generated/
 .gemini/
+
+# Development-only files
+task.md
+backend/output_test.txt
+backend/test_*.py
