@@ -41,7 +41,7 @@ echo [OK] Node.js packages ditemukan.
 :: [3] Jalankan Backend FastAPI (window baru)
 :: ─────────────────────────────────────────────
 echo [3/4] Menjalankan Backend FastAPI di port 8000...
-start "AlphaHunter-Backend" cmd /k "title AlphaHunter - Backend (FastAPI :8000) && call "%~dp0backend\venv\Scripts\activate.bat" && cd /d "%~dp0backend" && uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+start "AlphaHunter-Backend" cmd /k "title AlphaHunter - Backend (FastAPI :8000) && call "%~dp0backend\venv\Scripts\activate.bat" && cd /d "%~dp0backend" && uvicorn app.main:app --reload --reload-exclude "*.db" --reload-exclude "*.json" --reload-exclude "*.csv" --reload-exclude "*.joblib" --reload-exclude "**/data/*" --host 127.0.0.1 --port 8000"
 
 echo Menunggu backend siap...
 ping -n 4 127.0.0.1 >nul

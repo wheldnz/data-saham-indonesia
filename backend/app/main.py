@@ -212,9 +212,15 @@ def trigger_update(background_tasks: BackgroundTasks):
         
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'run_pipeline.py')
     
+    # Determine the python executable (prefer venv python if exists)
+    python_exe = sys.executable
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'venv', 'Scripts', 'python.exe')
+    if os.path.exists(venv_python):
+        python_exe = venv_python
+        
     # Run pipeline in background using subprocess
     def run_script():
-        subprocess.Popen([sys.executable, script_path])
+        subprocess.Popen([python_exe, script_path])
         
     background_tasks.add_task(run_script)
     

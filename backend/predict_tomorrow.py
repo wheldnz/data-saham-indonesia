@@ -42,7 +42,7 @@ def predict_tomorrow():
     print("Connecting to database using sqlite3...")
     import sqlite3
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     
     try:
         # Load the latest date available in the database
