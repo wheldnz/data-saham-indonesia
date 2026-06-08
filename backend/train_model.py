@@ -47,6 +47,21 @@ def train_model():
     print(f"Baseline Accuracy (always guessing majority class): {baseline_acc:.2%}")
 
     # ─────────────────────────────────────────────────────────────
+    # Class Imbalance Correction via scale_pos_weight
+    #
+    # Jika dataset memiliki lebih banyak hari 'turun' (class 0)
+    # daripada hari 'naik' (class 1), XGBoost akan bias ke class 0.
+    # scale_pos_weight = count(0) / count(1) menyeimbangkan bobot
+    # sehingga model memberikan penalti yang setara untuk kesalahan
+    # di kedua kelas — meningkatkan recall untuk kelas minoritas.
+    # ─────────────────────────────────────────────────────────────
+    n_class0 = int((y == 0).sum())
+    n_class1 = int((y == 1).sum())
+    scale_pos_weight = n_class0 / n_class1 if n_class1 > 0 else 1.0
+    print(f"Class distribution — 0 (Down): {n_class0:,} ({n_class0/len(y):.1%}) | 1 (Up): {n_class1:,} ({n_class1/len(y):.1%})")
+    print(f"scale_pos_weight = {scale_pos_weight:.4f} (applied to XGBoost)")
+
+    # ─────────────────────────────────────────────────────────────
     # Walk-Forward Cross-Validation
     #
     # Menggunakan TimeSeriesSplit dengan purge gap 5 hari trading.
@@ -66,12 +81,13 @@ def train_model():
     model_params = dict(
         n_estimators=100,
         learning_rate=0.05,
-        max_depth=4,          # Diturunkan dari 5 ke 4 untuk mengurangi overfitting
-        subsample=0.75,       # Diturunkan dari 0.8 ke 0.75
+        max_depth=4,
+        subsample=0.75,
         colsample_bytree=0.75,
-        min_child_weight=5,   # Minimum sampel per leaf (regularisasi ekstra)
-        reg_alpha=0.1,        # L1 regularization
-        reg_lambda=1.5,       # L2 regularization
+        min_child_weight=5,
+        reg_alpha=0.1,
+        reg_lambda=1.5,
+        scale_pos_weight=scale_pos_weight,  # Class imbalance correction
         random_state=42,
         eval_metric='logloss'
     )

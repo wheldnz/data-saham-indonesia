@@ -147,7 +147,14 @@ def ingest_daily_data(db, tickers: list[str]):
     max_dates_query = db.query(DailyOHLCV.ticker, func.max(DailyOHLCV.date)).group_by(DailyOHLCV.ticker).all()
     max_dates = {ticker: max_date for ticker, max_date in max_dates_query}
     
-    fallback_start = (datetime.now() - timedelta(days=2 * 365)).date()
+    # fallback_start digunakan untuk saham yang belum punya data di DB.
+    # 5 tahun dipilih agar mencakup siklus pasar penuh:
+    #   2020: COVID crash (dominan class 0 / turun)
+    #   2021: Post-COVID bull run (dominan class 1 / naik)
+    #   2022: Rate hike global (koreksi bearish)
+    #   2023-2024: Recovery & sideways
+    # Siklus yang beragam = distribusi target lebih seimbang ~50/50
+    fallback_start = (datetime.now() - timedelta(days=5 * 365)).date()
     today_str = datetime.now().strftime('%Y-%m-%d')
     
     print(f"\n--- Ingesting Incremental Data up to {today_str} for {len(tickers)} stocks ---")
