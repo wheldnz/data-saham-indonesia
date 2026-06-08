@@ -19,6 +19,7 @@ def calculate_broker_summaries(db: Session, limit_days: int = 15):
     """
     Calculates EOD broker summaries and accumulation status for all active stocks.
     Generates realistic broker buy/sell lists and net foreign flows based on price-volume dynamics.
+    Optimized: uses bulk pre-load instead of N+1 queries (1 SELECT per ticker vs 1 per row).
     """
     print(f"--- Running Bandarologi Engine: Seeding last {limit_days} days ---")
     active_stocks = db.query(Stock).filter(Stock.is_active == True).all()
@@ -35,6 +36,18 @@ def calculate_broker_summaries(db: Session, limit_days: int = 15):
 
         # Reverse so we process in chronological order
         ohlcv_records.reverse()
+
+        # --- OPTIMIZED: Bulk pre-load existing BrokerSummary records ---
+        # Mengganti N+1 query (1 SELECT per baris) dengan 1 SELECT per ticker.
+        # Untuk 937 saham × 15 hari, ini mengurangi dari 14,055 queries → 937 queries.
+        dates_in_window = [r.date for r in ohlcv_records]
+        existing_summaries = {}
+        if dates_in_window:
+            existing_qs = db.query(BrokerSummary).filter(
+                BrokerSummary.ticker == ticker,
+                BrokerSummary.date.in_(dates_in_window)
+            ).all()
+            existing_summaries = {s.date: s for s in existing_qs}
 
         for ohlcv in ohlcv_records:
             date = ohlcv.date
@@ -153,11 +166,8 @@ def calculate_broker_summaries(db: Session, limit_days: int = 15):
                 ohlcv.foreign_buy = 0
                 ohlcv.foreign_sell = round(abs(foreign_vol_net))
 
-            # Store in Database
-            existing = db.query(BrokerSummary).filter(
-                BrokerSummary.ticker == ticker,
-                BrokerSummary.date == date
-            ).first()
+            # --- OPTIMIZED: dict lookup instead of individual SELECT ---
+            existing = existing_summaries.get(date)
             
             if existing:
                 existing.top_buyers = json.dumps(top_buyers_list)
