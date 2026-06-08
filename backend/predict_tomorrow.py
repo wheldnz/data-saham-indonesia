@@ -48,9 +48,20 @@ def predict_tomorrow():
         # Load the latest date available in the database
         print("Fetching latest market data...")
         
-        # We fetch all OHLCV and Features, then group by ticker to get the latest
-        df_ohlcv = pd.read_sql_query('SELECT ticker, date, open, high, low, close, volume, value FROM daily_ohlcv', conn)
-        df_features = pd.read_sql_query('SELECT * FROM technical_features', conn)
+        # Optimized: only load last 30 days per ticker (not full table)
+        df_ohlcv = pd.read_sql_query('''
+            SELECT o.ticker, o.date, o.open, o.high, o.low, o.close, o.volume, o.value
+            FROM daily_ohlcv o
+            INNER JOIN (
+                SELECT ticker, MAX(date) as max_date FROM daily_ohlcv GROUP BY ticker
+            ) m ON o.ticker = m.ticker AND o.date >= date(m.max_date, '-30 days')
+        ''', conn)
+        df_features = pd.read_sql_query('''
+            SELECT f.* FROM technical_features f
+            INNER JOIN (
+                SELECT ticker, MAX(date) as max_date FROM technical_features GROUP BY ticker
+            ) m ON f.ticker = m.ticker AND f.date >= date(m.max_date, '-30 days')
+        ''', conn)
         
         if df_ohlcv.empty or df_features.empty:
             print("No data available.")
@@ -65,8 +76,26 @@ def predict_tomorrow():
         # Calculate patterns
         df_merged['patterns'] = detect_candlestick_patterns(df_merged)
         
-        # Get the latest row for each ticker
+        # --- Market-Neutral Feature Engineering ---
+        # Harus sama persis dengan yang ada di prepare_ml_data.py
+        # Fitur-fitur ini dihitung relatif terhadap median pasar pada hari yang sama.
         df_latest = df_merged.groupby('ticker').tail(1).copy()
+        
+        # return_1d: persentase perubahan harga dari open ke close
+        df_latest['return_1d'] = (df_latest['close'] - df_latest['open']) / df_latest['open'].replace(0, float('nan'))
+        
+        # close_vs_sma20_pct: posisi close relatif terhadap SMA20
+        df_latest['close_vs_sma20_pct'] = (df_latest['close'] - df_latest['sma_20']) / df_latest['sma_20'].replace(0, float('nan'))
+        
+        # volume_ratio: volume relatif terhadap SMA volume 20-hari
+        df_latest['volume_ratio'] = df_latest['volume'] / df_latest['volume_sma_20'].replace(0, float('nan'))
+        
+        # rsi_relative: RSI14 relatif terhadap median RSI14 semua saham hari ini
+        rsi_median = df_latest['rsi_14'].median()
+        df_latest['rsi_relative'] = df_latest['rsi_14'] - rsi_median
+        
+        # is_active: semua saham di inference dianggap aktif (=1)
+        df_latest['is_active'] = 1.0
         
         # Drop rows with NaN features
         df_latest = df_latest.dropna()
@@ -90,7 +119,19 @@ def predict_tomorrow():
         # Save predictions history for Learning Engine
         try:
             import json
-            pred_date_str = df_ranked['date'].iloc[0].strftime('%Y-%m-%d')
+            from datetime import timedelta
+            
+            # Tanggal data terakhir (mis. 2026-06-05 Jumat)
+            last_data_date = df_ranked['date'].iloc[0]
+            
+            # Prediksi adalah untuk T+1 (hari kerja berikutnya)
+            # Skip weekend: Sabtu → Senin (+2), Minggu → Senin (+1), hari kerja → +1
+            next_day = last_data_date + timedelta(days=1)
+            while next_day.weekday() >= 5:  # 5=Sabtu, 6=Minggu
+                next_day += timedelta(days=1)
+            pred_date_str = next_day.strftime('%Y-%m-%d')
+            
+            print(f"Data date: {last_data_date.strftime('%Y-%m-%d')} → Prediction for: {pred_date_str}")
             history_file = os.path.join(DATA_DIR, 'predictions_history.json')
             
             # Load existing
@@ -133,6 +174,19 @@ def predict_tomorrow():
             
         # Format the output
         df_ranked['prob_up'] = (df_ranked['prob_up'] * 100).round(2).astype(str) + '%'
+        
+        # Override date ke T+1 (prediction_date) sebelum disimpan
+        # Kolom 'date' berisi tanggal data terakhir (mis. Jumat 05-06),
+        # tapi prediksi ini UNTUK hari berikutnya (Senin 08-06).
+        try:
+            from datetime import timedelta
+            last_date = df_ranked['date'].iloc[0]
+            next_bd = last_date + timedelta(days=1)
+            while next_bd.weekday() >= 5:
+                next_bd += timedelta(days=1)
+            df_ranked['date'] = next_bd.strftime('%Y-%m-%d')
+        except Exception:
+            pass  # Keep original date if any error
         
         print("\n==========================================")
         print("  ML RANKING ENGINE: TOP 10 BUYS FOR T+1  ")
