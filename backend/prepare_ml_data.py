@@ -1,6 +1,7 @@
 import sys
 import os
 import pandas as pd
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -16,58 +17,167 @@ def prepare_ml_data():
     import sqlite3
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
     conn = sqlite3.connect(db_path)
-    
+
     try:
-        # Load all OHLCV data into a pandas dataframe
+        # ─────────────────────────────────────────────────────────────
+        # [1] Load raw data
+        # ─────────────────────────────────────────────────────────────
         print("Loading OHLCV data...")
-        df_ohlcv = pd.read_sql_query('SELECT ticker, date, close, volume, value FROM daily_ohlcv', conn)
-        
-        # Load all Technical Features
+        df_ohlcv = pd.read_sql_query(
+            'SELECT ticker, date, close, volume, value FROM daily_ohlcv', conn
+        )
+
         print("Loading Technical Features...")
-        df_features = pd.read_sql_query('SELECT * FROM technical_features', conn)
-        
+        df_features = pd.read_sql_query(
+            'SELECT * FROM technical_features', conn
+        )
+
+        # ── FIX 3: Survivorship Correction ──────────────────────────
+        # Load stock active status. Saham yang is_active=False
+        # (suspend/delisting) tetap diikutsertakan dalam training,
+        # dan baris-baris terakhir sebelum delisting mendapat
+        # label koreksi (target=0) untuk mengajarkan model pola
+        # bahaya mendekati delisting.
+        print("Loading stock active status (for survivorship correction)...")
+        df_stocks = pd.read_sql_query(
+            'SELECT ticker, is_active FROM stocks', conn
+        )
+        inactive_tickers = set(
+            df_stocks.loc[df_stocks['is_active'] == 0, 'ticker'].tolist()
+        )
+        print(f"  Found {len(inactive_tickers)} inactive/delisted tickers for correction.")
+        # ─────────────────────────────────────────────────────────────
+
         if df_ohlcv.empty or df_features.empty:
             print("Not enough data to prepare dataset.")
             return
 
-        # Ensure datetime format
-        df_ohlcv['date'] = pd.to_datetime(df_ohlcv['date'])
+        # ─────────────────────────────────────────────────────────────
+        # [2] Merge OHLCV + Technical Features
+        # ─────────────────────────────────────────────────────────────
+        df_ohlcv['date']    = pd.to_datetime(df_ohlcv['date'])
         df_features['date'] = pd.to_datetime(df_features['date'])
-        
-        # Merge OHLCV and Features on ticker and date
+
         print("Merging datasets...")
         df_merged = pd.merge(df_ohlcv, df_features, on=['ticker', 'date'], how='inner')
-        
-        # Sort by ticker and date
         df_merged.sort_values(by=['ticker', 'date'], inplace=True)
-        
-        # Calculate Target T+1 (Classification: 1 if tomorrow's close > today's close, else 0)
+        df_merged.reset_index(drop=True, inplace=True)
+
+        # ─────────────────────────────────────────────────────────────
+        # [3] Calculate Target T+1
+        # Target = 1 jika harga besok > harga hari ini, else 0.
+        # next_close langsung dihapus setelah label dibuat
+        # untuk menghindari future leakage.
+        # ─────────────────────────────────────────────────────────────
         print("Calculating Target T+1...")
-        # Create column for tomorrow's close per ticker
         df_merged['next_close'] = df_merged.groupby('ticker')['close'].shift(-1)
-        
-        # Target = 1 if next_close > close
         df_merged['target_1d_up'] = (df_merged['next_close'] > df_merged['close']).astype(int)
-        
-        # Drop rows where we don't have tomorrow's data (the last row for each ticker)
-        df_final = df_merged.dropna(subset=['next_close'])
-        
-        # Drop rows that have NaN in the technical features (early days of stocks)
-        df_final = df_final.dropna()
-        
-        # Drop non-feature columns that aren't needed for ML (but keep ticker and date for reference)
-        # We drop next_close because it's a future leak.
+
+        # ── FIX 3: Survivorship label correction ────────────────────
+        # Untuk saham yang sudah tidak aktif (suspend/delisting),
+        # 20 baris terakhir per ticker di-override ke target=0.
+        # Logika: pola menjelang delisting hampir selalu negatif,
+        # mengajari model menghindari saham bermasalah.
+        if inactive_tickers:
+            print(f"  Applying survivorship correction to {len(inactive_tickers)} inactive tickers...")
+            corrected_count = 0
+            for ticker in inactive_tickers:
+                mask = df_merged['ticker'] == ticker
+                ticker_indices = df_merged.index[mask].tolist()
+                if len(ticker_indices) >= 5:
+                    # Override 20 baris terakhir (atau semua jika < 20)
+                    last_n = min(20, len(ticker_indices))
+                    last_indices = ticker_indices[-last_n:]
+                    df_merged.loc[last_indices, 'target_1d_up'] = 0
+                    corrected_count += last_n
+            print(f"  Survivorship correction: {corrected_count} rows overridden to target=0.")
+        # ─────────────────────────────────────────────────────────────
+
+        # Drop baris tanpa data besok (baris terakhir per ticker)
+        df_final = df_merged.dropna(subset=['next_close']).copy()
+
+        # Hapus next_close — ini adalah data masa depan, JANGAN pernah masuk ke fitur
         df_final = df_final.drop(columns=['next_close'])
-        
-        print(f"Final dataset shape: {df_final.shape}")
-        
-        # Save to CSV
-        print(f"Saving dataset to {DATASET_PATH}...")
+
+        # ─────────────────────────────────────────────────────────────
+        # [4] FIX 2: Market-Neutral & Relative Features
+        #
+        # Tambah fitur yang mencerminkan kekuatan RELATIF saham
+        # dibanding pasar, bukan nilai absolut. Ini mengurangi
+        # cross-sectional correlation di mana model belajar pola
+        # "IHSG hari ini naik" ketimbang pola individual saham.
+        # ─────────────────────────────────────────────────────────────
+        print("Engineering market-neutral relative features...")
+
+        # 4a. Return 1 hari (%)
+        #     Menggambarkan momentum harian saham itu sendiri.
+        #     Dihitung dari data hari ini vs kemarin (backward-looking, aman).
+        df_final['prev_close'] = df_final.groupby('ticker')['close'].shift(1)
+        df_final['return_1d'] = np.where(
+            df_final['prev_close'] > 0,
+            (df_final['close'] / df_final['prev_close'] - 1.0) * 100.0,
+            0.0
+        )
+        df_final = df_final.drop(columns=['prev_close'])
+
+        # 4b. Posisi close terhadap SMA20 (%)
+        #     Mengukur seberapa jauh harga dari rata-rata 20 hari.
+        #     Nilai positif = di atas MA (bullish), negatif = di bawah.
+        df_final['close_vs_sma20_pct'] = np.where(
+            df_final['sma_20'] > 0,
+            (df_final['close'] / df_final['sma_20'] - 1.0) * 100.0,
+            0.0
+        )
+
+        # 4c. Volume ratio (volume hari ini / SMA volume 20 hari)
+        #     Nilai > 1 = volume di atas rata-rata (unusual activity).
+        #     Menggantikan volume absolut yang berkorelasi dengan market cap.
+        df_final['volume_ratio'] = np.where(
+            df_final['volume_sma_20'] > 0,
+            df_final['volume'] / df_final['volume_sma_20'],
+            1.0
+        )
+
+        # 4d. RSI relatif terhadap median pasar per tanggal
+        #     Mengukur kekuatan momentum saham RELATIF terhadap
+        #     semua saham lain pada tanggal yang sama.
+        #     RSI > 0 = lebih kuat dari median pasar.
+        daily_rsi_median = df_final.groupby('date')['rsi_14'].transform('median')
+        df_final['rsi_relative'] = df_final['rsi_14'] - daily_rsi_median
+
+        # 4e. is_active flag (sinyal fundamentals)
+        df_final['is_active'] = df_final['ticker'].apply(
+            lambda t: 0.0 if t in inactive_tickers else 1.0
+        )
+
+        print(f"  Added features: return_1d, close_vs_sma20_pct, volume_ratio, rsi_relative, is_active")
+        # ─────────────────────────────────────────────────────────────
+
+        # ─────────────────────────────────────────────────────────────
+        # [5] Final cleanup
+        # ─────────────────────────────────────────────────────────────
+        # Drop rows with NaN di technical features (awal historis data)
+        df_final = df_final.dropna()
+
+        # Pastikan tidak ada inf
+        df_final = df_final.replace([np.inf, -np.inf], np.nan).dropna()
+
+        print(f"\nFinal dataset shape: {df_final.shape}")
+        print(f"Date range: {df_final['date'].min()} to {df_final['date'].max()}")
+        print(f"Unique tickers: {df_final['ticker'].nunique()}")
+        print(f"Target distribution:\n{df_final['target_1d_up'].value_counts(normalize=True).round(3)}")
+
+        # ─────────────────────────────────────────────────────────────
+        # [6] Save dataset
+        # ─────────────────────────────────────────────────────────────
+        print(f"\nSaving dataset to {DATASET_PATH}...")
         df_final.to_csv(DATASET_PATH, index=False)
         print("Dataset preparation complete!")
-        
+
     except Exception as e:
+        import traceback
         print(f"Error preparing ML data: {e}")
+        traceback.print_exc()
     finally:
         conn.close()
 
