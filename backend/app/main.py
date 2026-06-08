@@ -667,7 +667,7 @@ def get_portfolio():
             ).all()
             
             for o in latest_ohlcvs:
-                current_prices[o.ticker] = o.close
+                current_prices[o.ticker] = o.high
                 
         holdings_list = []
         total_holdings_value = 0.0
