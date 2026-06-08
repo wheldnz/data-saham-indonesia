@@ -10,7 +10,8 @@ from app.models.market_data import DailyOHLCV, TechnicalFeature
 from pattern_scanner import detect_candlestick_patterns
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-MODEL_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
+MODEL_T1_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
+MODEL_T3_PATH = os.path.join(DATA_DIR, 'xgb_model_t3.joblib')
 FEATURES_LIST_PATH = os.path.join(DATA_DIR, 'features_list.joblib')
 OUTPUT_PATH = os.path.join(DATA_DIR, 'daily_ranking.csv')
 
@@ -29,14 +30,15 @@ def update_pipeline_status(message, progress, is_running=True):
         print(f"Error writing status file: {e}")
 
 def predict_tomorrow():
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(FEATURES_LIST_PATH):
-        print("Model not found. Please run train_model.py first.")
+    if not os.path.exists(MODEL_T1_PATH) or not os.path.exists(MODEL_T3_PATH) or not os.path.exists(FEATURES_LIST_PATH):
+        print("Model files not found. Please run train_model.py first.")
         update_pipeline_status("Model files not found. Run training first.", 0, False)
         return
         
-    print("Loading XGBoost Model...")
+    print("Loading XGBoost Models (T+1 and T+3)...")
     update_pipeline_status("AI is generating Top 10 Predictions...", 80)
-    model = joblib.load(MODEL_PATH)
+    model_t1 = joblib.load(MODEL_T1_PATH)
+    model_t3 = joblib.load(MODEL_T3_PATH)
     features_list = joblib.load(FEATURES_LIST_PATH)
     
     print("Connecting to database using sqlite3...")
@@ -105,14 +107,20 @@ def predict_tomorrow():
         X_latest = df_latest[features_list]
         
         # Predict Probabilities
-        # predict_proba returns [[prob_0, prob_1], ...]
-        probs = model.predict_proba(X_latest)
-        prob_up = probs[:, 1] # Probability of class 1 (Up)
+        probs_t1 = model_t1.predict_proba(X_latest)[:, 1]
+        probs_t3 = model_t3.predict_proba(X_latest)[:, 1]
         
-        df_latest['prob_up'] = prob_up
+        df_latest['prob_up'] = probs_t1
+        df_latest['prob_up_t3'] = probs_t3
         
-        # Rank the stocks
-        df_ranked = df_latest[['ticker', 'date', 'close', 'prob_up', 'patterns']].copy()
+        # Create ranking DataFrame
+        df_ranked = df_latest[['ticker', 'date', 'close', 'prob_up', 'prob_up_t3', 'patterns']].copy()
+        
+        # Save raw floats for numerical sorting in frontend
+        df_ranked['prob_up_raw'] = df_ranked['prob_up']
+        df_ranked['prob_up_t3_raw'] = df_ranked['prob_up_t3']
+        
+        # Sort by T+1 to keep default T+1 rank order
         df_ranked.sort_values(by='prob_up', ascending=False, inplace=True)
         df_ranked['rank'] = range(1, len(df_ranked) + 1)
         
@@ -152,7 +160,8 @@ def predict_tomorrow():
                 day_predictions.append({
                     "ticker": row['ticker'],
                     "close": float(row['close']),
-                    "prob_up": f"{round(float(row['prob_up']) * 100, 2)}%",
+                    "prob_up": f"{round(float(row['prob_up_raw']) * 100, 2)}%",
+                    "prob_up_t3": f"{round(float(row['prob_up_t3_raw']) * 100, 2)}%",
                     "patterns": str(row['patterns']) if row['patterns'] else "",
                     "rank": int(row['rank'])
                 })
@@ -174,6 +183,7 @@ def predict_tomorrow():
             
         # Format the output
         df_ranked['prob_up'] = (df_ranked['prob_up'] * 100).round(2).astype(str) + '%'
+        df_ranked['prob_up_t3'] = (df_ranked['prob_up_t3'] * 100).round(2).astype(str) + '%'
         
         # Override date ke T+1 (prediction_date) sebelum disimpan
         # Kolom 'date' berisi tanggal data terakhir (mis. Jumat 05-06),

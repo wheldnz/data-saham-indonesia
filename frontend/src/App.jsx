@@ -4,6 +4,7 @@ import './index.css'
 
 function App() {
   const [predictions, setPredictions] = useState([])
+  const [predictionHorizon, setPredictionHorizon] = useState("T+1")
   const [status, setStatus] = useState({ message: "Idle", progress: 0, is_running: false })
   const [selectedTicker, setSelectedTicker] = useState(null)
   const [backtestData, setBacktestData] = useState(null)
@@ -806,7 +807,43 @@ function App() {
         {activeTab === 'screener' && (
           /* Predictions Panel */
           <div className="glass-panel predictions">
-            <h2>Top 10 T+1 Buys</h2>
+            <div className="predictions-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
+              <h2 style={{ marginBottom: 0 }}>Top 10 {predictionHorizon} Buys</h2>
+              <div className="horizon-tabs" style={{ display: 'flex', gap: '0.5rem' }}>
+                <button 
+                  className={`btn-preset ${predictionHorizon === 'T+1' ? 'active' : ''}`}
+                  style={{ 
+                    padding: '0.4rem 0.8rem', 
+                    fontSize: '0.8rem', 
+                    borderRadius: '6px', 
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    background: predictionHorizon === 'T+1' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff'
+                  }}
+                  onClick={() => setPredictionHorizon('T+1')}
+                >
+                  Horizon T+1 (Harian)
+                </button>
+                <button 
+                  className={`btn-preset ${predictionHorizon === 'T+3' ? 'active' : ''}`}
+                  style={{ 
+                    padding: '0.4rem 0.8rem', 
+                    fontSize: '0.8rem', 
+                    borderRadius: '6px', 
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    background: predictionHorizon === 'T+3' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff'
+                  }}
+                  onClick={() => setPredictionHorizon('T+3')}
+                >
+                  Horizon T+3 (Swing 3-Hari)
+                </button>
+              </div>
+            </div>
             {!Array.isArray(predictions) || predictions.length === 0 ? (
               <p className="no-data">No predictions available. Run an update first.</p>
             ) : (
@@ -817,7 +854,7 @@ function App() {
                       <th>Rank</th>
                       <th>Ticker</th>
                       <th>Close Price</th>
-                      <th>Probability (Up)</th>
+                      <th>Probability ({predictionHorizon})</th>
                       <th>Patterns</th>
                       <th>Bandarologi</th>
                       <th>Prediction Date</th>
@@ -825,61 +862,74 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {predictions.slice(0, 10).map((row, index) => (
-                      <tr 
-                        key={index} 
-                        className={selectedTicker === row.ticker ? 'active-row' : ''}
-                        onClick={() => setSelectedTicker(row.ticker)}
-                        style={{ cursor: 'pointer' }}
-                      >
-                        <td className="rank-col">#{row.rank}</td>
-                        <td className="ticker-col">{row.ticker}</td>
-                        <td>Rp {Number(row.close).toLocaleString('id-ID')}</td>
-                        <td className="prob-col">
-                          <div className="prob-pill">
-                            {row.prob_up}
-                          </div>
-                        </td>
-                        <td>
-                          {row.patterns && row.patterns !== 'nan' && row.patterns !== '' ? (
-                            row.patterns.split('|').map((pat, idx) => (
-                              <span key={idx} className={`badge badge-${pat.toLowerCase().replace(' ', '-')}`}>
-                                {pat}
+                    {[...predictions]
+                      .sort((a, b) => {
+                        if (predictionHorizon === 'T+3') {
+                          const valA = parseFloat(a.prob_up_t3_raw) || 0;
+                          const valB = parseFloat(b.prob_up_t3_raw) || 0;
+                          return valB - valA;
+                        } else {
+                          const valA = parseFloat(a.prob_up_raw) || parseFloat(a.prob_up) || 0;
+                          const valB = parseFloat(b.prob_up_raw) || parseFloat(b.prob_up) || 0;
+                          return valB - valA;
+                        }
+                      })
+                      .slice(0, 10)
+                      .map((row, index) => (
+                        <tr 
+                          key={index} 
+                          className={selectedTicker === row.ticker ? 'active-row' : ''}
+                          onClick={() => setSelectedTicker(row.ticker)}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <td className="rank-col">#{index + 1}</td>
+                          <td className="ticker-col">{row.ticker}</td>
+                          <td>Rp {Number(row.close).toLocaleString('id-ID')}</td>
+                          <td className="prob-col">
+                            <div className="prob-pill">
+                              {predictionHorizon === 'T+3' ? (row.prob_up_t3 || row.prob_up_t3_raw || '-') : row.prob_up}
+                            </div>
+                          </td>
+                          <td>
+                            {row.patterns && row.patterns !== 'nan' && row.patterns !== '' ? (
+                              row.patterns.split('|').map((pat, idx) => (
+                                <span key={idx} className={`badge badge-${pat.toLowerCase().replace(' ', '-')}`}>
+                                  {pat}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-gray-500 text-xs">-</span>
+                            )}
+                          </td>
+                          <td>
+                            {row.bandarologi_status ? (
+                              <span className={`badge badge-bandarologi status-${row.bandarologi_status.toLowerCase().replace(' ', '-')}`}>
+                                {row.bandarologi_status}
                               </span>
-                            ))
-                          ) : (
-                            <span className="text-gray-500 text-xs">-</span>
-                          )}
-                        </td>
-                        <td>
-                          {row.bandarologi_status ? (
-                            <span className={`badge badge-bandarologi status-${row.bandarologi_status.toLowerCase().replace(' ', '-')}`}>
-                              {row.bandarologi_status}
-                            </span>
-                          ) : (
-                            <span className="text-gray-500 text-xs">-</span>
-                          )}
-                        </td>
-                        <td>{row.date}</td>
-                        <td>
-                          <button 
-                            className="btn-preset active" 
-                            style={{ padding: '0.35rem 0.7rem', fontSize: '0.75rem', background: 'var(--primary-glow)', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setTradeTicker(row.ticker);
-                              setTradeAction("BUY");
-                              setTradeQty(100);
-                              setTradeError("");
-                              setTradeSuccess("");
-                              setShowTradeModal(true);
-                            }}
-                          >
-                            Beli
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                            ) : (
+                              <span className="text-gray-500 text-xs">-</span>
+                            )}
+                          </td>
+                          <td>{row.date}</td>
+                          <td>
+                            <button 
+                              className="btn-preset active" 
+                              style={{ padding: '0.35rem 0.7rem', fontSize: '0.75rem', background: 'var(--primary-glow)', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setTradeTicker(row.ticker);
+                                setTradeAction("BUY");
+                                setTradeQty(100);
+                                setTradeError("");
+                                setTradeSuccess("");
+                                setShowTradeModal(true);
+                              }}
+                            >
+                              Beli
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>

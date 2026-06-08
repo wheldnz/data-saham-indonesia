@@ -64,14 +64,17 @@ def prepare_ml_data():
         df_merged.reset_index(drop=True, inplace=True)
 
         # ─────────────────────────────────────────────────────────────
-        # [3] Calculate Target T+1
-        # Target = 1 jika harga besok > harga hari ini, else 0.
-        # next_close langsung dihapus setelah label dibuat
+        # [3] Calculate Target T+1 and T+3
+        # Target T+1 = 1 jika harga besok > harga hari ini, else 0.
+        # Target T+3 = 1 jika harga T+3 > harga hari ini, else 0.
+        # Kolom masa depan langsung dihapus setelah label dibuat
         # untuk menghindari future leakage.
         # ─────────────────────────────────────────────────────────────
-        print("Calculating Target T+1...")
+        print("Calculating Target T+1 and T+3...")
         df_merged['next_close'] = df_merged.groupby('ticker')['close'].shift(-1)
+        df_merged['close_t3'] = df_merged.groupby('ticker')['close'].shift(-3)
         df_merged['target_1d_up'] = (df_merged['next_close'] > df_merged['close']).astype(int)
+        df_merged['target_3d_up'] = (df_merged['close_t3'] > df_merged['close']).astype(int)
 
         # ── FIX 3: Survivorship label correction ────────────────────
         # Untuk saham yang sudah tidak aktif (suspend/delisting),
@@ -89,15 +92,16 @@ def prepare_ml_data():
                     last_n = min(20, len(ticker_indices))
                     last_indices = ticker_indices[-last_n:]
                     df_merged.loc[last_indices, 'target_1d_up'] = 0
+                    df_merged.loc[last_indices, 'target_3d_up'] = 0
                     corrected_count += last_n
-            print(f"  Survivorship correction: {corrected_count} rows overridden to target=0.")
+            print(f"  Survivorship correction: {corrected_count} rows overridden to target=0 (T+1 and T+3).")
         # ─────────────────────────────────────────────────────────────
 
-        # Drop baris tanpa data besok (baris terakhir per ticker)
-        df_final = df_merged.dropna(subset=['next_close']).copy()
+        # Drop baris tanpa data depan (baris-baris terakhir per ticker)
+        df_final = df_merged.dropna(subset=['next_close', 'close_t3']).copy()
 
-        # Hapus next_close — ini adalah data masa depan, JANGAN pernah masuk ke fitur
-        df_final = df_final.drop(columns=['next_close'])
+        # Hapus data masa depan — JANGAN pernah masuk ke fitur
+        df_final = df_final.drop(columns=['next_close', 'close_t3'])
 
         # ─────────────────────────────────────────────────────────────
         # [4] FIX 2: Market-Neutral & Relative Features
@@ -165,7 +169,8 @@ def prepare_ml_data():
         print(f"\nFinal dataset shape: {df_final.shape}")
         print(f"Date range: {df_final['date'].min()} to {df_final['date'].max()}")
         print(f"Unique tickers: {df_final['ticker'].nunique()}")
-        print(f"Target distribution:\n{df_final['target_1d_up'].value_counts(normalize=True).round(3)}")
+        print(f"Target T+1 distribution:\n{df_final['target_1d_up'].value_counts(normalize=True).round(3)}")
+        print(f"Target T+3 distribution:\n{df_final['target_3d_up'].value_counts(normalize=True).round(3)}")
 
         # ─────────────────────────────────────────────────────────────
         # [6] Save dataset
