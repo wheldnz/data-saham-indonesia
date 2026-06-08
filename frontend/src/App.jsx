@@ -5,6 +5,9 @@ import './index.css'
 function App() {
   const [predictions, setPredictions] = useState([])
   const [predictionHorizon, setPredictionHorizon] = useState("T+1")
+  const [maxPriceFilter, setMaxPriceFilter] = useState("")
+  const [showOnlyFca, setShowOnlyFca] = useState(false)
+  const [hideFca, setHideFca] = useState(false)
   const [status, setStatus] = useState({ message: "Idle", progress: 0, is_running: false })
   const [selectedTicker, setSelectedTicker] = useState(null)
   const [backtestData, setBacktestData] = useState(null)
@@ -844,96 +847,289 @@ function App() {
                 </button>
               </div>
             </div>
-            {!Array.isArray(predictions) || predictions.length === 0 ? (
-              <p className="no-data">No predictions available. Run an update first.</p>
-            ) : (
-              <div className="table-responsive">
-                <table className="pred-table">
-                  <thead>
-                    <tr>
-                      <th>Rank</th>
-                      <th>Ticker</th>
-                      <th>Close Price</th>
-                      <th>Probability ({predictionHorizon})</th>
-                      <th>Patterns</th>
-                      <th>Bandarologi</th>
-                      <th>Prediction Date</th>
-                      <th>Aksi</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...predictions]
-                      .sort((a, b) => {
-                        if (predictionHorizon === 'T+3') {
-                          const valA = parseFloat(a.prob_up_t3_raw) || 0;
-                          const valB = parseFloat(b.prob_up_t3_raw) || 0;
-                          return valB - valA;
-                        } else {
-                          const valA = parseFloat(a.prob_up_raw) || parseFloat(a.prob_up) || 0;
-                          const valB = parseFloat(b.prob_up_raw) || parseFloat(b.prob_up) || 0;
-                          return valB - valA;
-                        }
-                      })
-                      .slice(0, 10)
-                      .map((row, index) => (
-                        <tr 
-                          key={index} 
-                          className={selectedTicker === row.ticker ? 'active-row' : ''}
-                          onClick={() => setSelectedTicker(row.ticker)}
-                          style={{ cursor: 'pointer' }}
-                        >
-                          <td className="rank-col">#{index + 1}</td>
-                          <td className="ticker-col">{row.ticker}</td>
-                          <td>Rp {Number(row.close).toLocaleString('id-ID')}</td>
-                          <td className="prob-col">
-                            <div className="prob-pill">
-                              {predictionHorizon === 'T+3' ? (row.prob_up_t3 || row.prob_up_t3_raw || '-') : row.prob_up}
-                            </div>
-                          </td>
-                          <td>
-                            {row.patterns && row.patterns !== 'nan' && row.patterns !== '' ? (
-                              row.patterns.split('|').map((pat, idx) => (
-                                <span key={idx} className={`badge badge-${pat.toLowerCase().replace(' ', '-')}`}>
-                                  {pat}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="text-gray-500 text-xs">-</span>
-                            )}
-                          </td>
-                          <td>
-                            {row.bandarologi_status ? (
-                              <span className={`badge badge-bandarologi status-${row.bandarologi_status.toLowerCase().replace(' ', '-')}`}>
-                                {row.bandarologi_status}
-                              </span>
-                            ) : (
-                              <span className="text-gray-500 text-xs">-</span>
-                            )}
-                          </td>
-                          <td>{row.date}</td>
-                          <td>
-                            <button 
-                              className="btn-preset active" 
-                              style={{ padding: '0.35rem 0.7rem', fontSize: '0.75rem', background: 'var(--primary-glow)', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setTradeTicker(row.ticker);
-                                setTradeAction("BUY");
-                                setTradeQty(100);
-                                setTradeError("");
-                                setTradeSuccess("");
-                                setShowTradeModal(true);
-                              }}
-                            >
-                              Beli
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+            {/* Filters Row */}
+            <div className="predictions-filters" style={{ 
+              display: 'flex', 
+              gap: '1rem', 
+              alignItems: 'center', 
+              marginBottom: '1rem', 
+              padding: '0.8rem 1rem', 
+              background: 'rgba(255,255,255,0.02)', 
+              borderRadius: '8px', 
+              border: '1px solid rgba(255,255,255,0.05)',
+              flexWrap: 'wrap'
+            }}>
+              {/* Max Price Filter */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.85rem', color: '#ccc', fontWeight: '500' }}>Max Harga (Rp):</span>
+                <input 
+                  type="number"
+                  placeholder="Contoh: 1000"
+                  value={maxPriceFilter}
+                  onChange={(e) => setMaxPriceFilter(e.target.value)}
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '4px',
+                    padding: '0.35rem 0.6rem',
+                    color: '#fff',
+                    width: '120px',
+                    fontSize: '0.85rem'
+                  }}
+                />
+                <button
+                  className="btn-preset"
+                  style={{
+                    padding: '0.35rem 0.6rem',
+                    fontSize: '0.75rem',
+                    borderRadius: '4px',
+                    background: maxPriceFilter === '1000' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => setMaxPriceFilter(maxPriceFilter === '1000' ? '' : '1000')}
+                >
+                  &lt; 1000
+                </button>
+                <button
+                  className="btn-preset"
+                  style={{
+                    padding: '0.35rem 0.6rem',
+                    fontSize: '0.75rem',
+                    borderRadius: '4px',
+                    background: maxPriceFilter === '500' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => setMaxPriceFilter(maxPriceFilter === '500' ? '' : '500')}
+                >
+                  &lt; 500
+                </button>
+              </div>
+
+              {/* FCA Filter */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.85rem', color: '#ccc', fontWeight: '500' }}>Filter FCA (Full Call Auction):</span>
+                <div style={{ display: 'flex', gap: '0.25rem', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <button
+                    className="btn-preset"
+                    style={{
+                      padding: '0.3rem 0.6rem',
+                      fontSize: '0.75rem',
+                      borderRadius: '3px',
+                      background: (!showOnlyFca && !hideFca) ? 'var(--primary-glow)' : 'transparent',
+                      border: 'none',
+                      color: '#fff',
+                      cursor: 'pointer',
+                      fontWeight: (!showOnlyFca && !hideFca) ? 'bold' : 'normal'
+                    }}
+                    onClick={() => {
+                      setShowOnlyFca(false);
+                      setHideFca(false);
+                    }}
+                  >
+                    Semua
+                  </button>
+                  <button
+                    className="btn-preset"
+                    style={{
+                      padding: '0.3rem 0.6rem',
+                      fontSize: '0.75rem',
+                      borderRadius: '3px',
+                      background: hideFca ? 'var(--primary-glow)' : 'transparent',
+                      border: 'none',
+                      color: '#fff',
+                      cursor: 'pointer',
+                      fontWeight: hideFca ? 'bold' : 'normal'
+                    }}
+                    onClick={() => {
+                      setShowOnlyFca(false);
+                      setHideFca(true);
+                    }}
+                  >
+                    Tanpa FCA (Harga &gt; 50)
+                  </button>
+                  <button
+                    className="btn-preset"
+                    style={{
+                      padding: '0.3rem 0.6rem',
+                      fontSize: '0.75rem',
+                      borderRadius: '3px',
+                      background: showOnlyFca ? 'var(--primary-glow)' : 'transparent',
+                      border: 'none',
+                      color: '#fff',
+                      cursor: 'pointer',
+                      fontWeight: showOnlyFca ? 'bold' : 'normal'
+                    }}
+                    onClick={() => {
+                      setShowOnlyFca(true);
+                      setHideFca(false);
+                    }}
+                  >
+                    Hanya FCA (Harga ≤ 50)
+                  </button>
+                </div>
+              </div>
+
+              {/* Reset Button */}
+              {(maxPriceFilter || showOnlyFca || hideFca) && (
+                <button
+                  style={{
+                    marginLeft: 'auto',
+                    padding: '0.35rem 0.6rem',
+                    fontSize: '0.75rem',
+                    borderRadius: '4px',
+                    background: 'rgba(239, 68, 68, 0.15)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    color: '#f87171',
+                    cursor: 'pointer',
+                    fontWeight: 'bold'
+                  }}
+                  onClick={() => {
+                    setMaxPriceFilter("");
+                    setShowOnlyFca(false);
+                    setHideFca(false);
+                  }}
+                >
+                  Reset Filter
+                </button>
+              )}
+            </div>
+
+            {/* Explanatory subtitle / legend for FCA */}
+            {showOnlyFca && (
+              <div style={{ fontSize: '0.8rem', color: '#fbbf24', background: 'rgba(251, 191, 36, 0.1)', border: '1px solid rgba(251, 191, 36, 0.2)', padding: '0.5rem 0.8rem', borderRadius: '6px', marginBottom: '1rem' }}>
+                💡 <strong>Catatan FCA:</strong> Menampilkan saham dengan harga penutupan ≤ Rp 50. Saham FCA (Papan Pemantauan Khusus) dapat ditransaksikan di bawah batas minimum pasar reguler (Rp 50) hingga Rp 1 menggunakan mekanisme Full Call Auction.
               </div>
             )}
+
+            {!Array.isArray(predictions) || predictions.length === 0 ? (
+              <p className="no-data">No predictions available. Run an update first.</p>
+            ) : (() => {
+              const filtered = [...predictions].filter((row) => {
+                // Max Price filter
+                if (maxPriceFilter !== "") {
+                  const limit = parseFloat(maxPriceFilter);
+                  if (!isNaN(limit) && parseFloat(row.close) > limit) {
+                    return false;
+                  }
+                }
+                // FCA filter (Harga <= 50)
+                if (showOnlyFca && parseFloat(row.close) > 50) {
+                  return false;
+                }
+                if (hideFca && parseFloat(row.close) <= 50) {
+                  return false;
+                }
+                return true;
+              });
+
+              if (filtered.length === 0) {
+                return (
+                  <p className="no-data" style={{ padding: '3rem', textAlign: 'center', color: '#94a3b8' }}>
+                    Tidak ada saham yang memenuhi kriteria filter. Silakan ubah atau reset filter Anda.
+                  </p>
+                );
+              }
+
+              return (
+                <div className="table-responsive">
+                  <table className="pred-table">
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>Ticker</th>
+                        <th>Close Price</th>
+                        <th>Probability ({predictionHorizon})</th>
+                        <th>Patterns</th>
+                        <th>Bandarologi</th>
+                        <th>Prediction Date</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered
+                        .sort((a, b) => {
+                          if (predictionHorizon === 'T+3') {
+                            const valA = parseFloat(a.prob_up_t3_raw) || 0;
+                            const valB = parseFloat(b.prob_up_t3_raw) || 0;
+                            return valB - valA;
+                          } else {
+                            const valA = parseFloat(a.prob_up_raw) || parseFloat(a.prob_up) || 0;
+                            const valB = parseFloat(b.prob_up_raw) || parseFloat(b.prob_up) || 0;
+                            return valB - valA;
+                          }
+                        })
+                        .slice(0, 10)
+                        .map((row, index) => (
+                          <tr 
+                            key={index} 
+                            className={selectedTicker === row.ticker ? 'active-row' : ''}
+                            onClick={() => setSelectedTicker(row.ticker)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <td className="rank-col">#{index + 1}</td>
+                            <td className="ticker-col">
+                              {row.ticker}
+                              {parseFloat(row.close) <= 50 && (
+                                <span style={{ marginLeft: '6px', fontSize: '0.7rem', padding: '2px 4px', background: '#dc2626', color: '#fff', borderRadius: '3px', fontWeight: 'bold' }} title="Papan Pemantauan Khusus (FCA)">
+                                  FCA
+                                </span>
+                              )}
+                            </td>
+                            <td>Rp {Number(row.close).toLocaleString('id-ID')}</td>
+                            <td className="prob-col">
+                              <div className="prob-pill">
+                                {predictionHorizon === 'T+3' ? (row.prob_up_t3 || row.prob_up_t3_raw || '-') : row.prob_up}
+                              </div>
+                            </td>
+                            <td>
+                              {row.patterns && row.patterns !== 'nan' && row.patterns !== '' ? (
+                                row.patterns.split('|').map((pat, idx) => (
+                                  <span key={idx} className={`badge badge-${pat.toLowerCase().replace(' ', '-')}`}>
+                                    {pat}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-gray-500 text-xs">-</span>
+                              )}
+                            </td>
+                            <td>
+                              {row.bandarologi_status ? (
+                                <span className={`badge badge-bandarologi status-${row.bandarologi_status.toLowerCase().replace(' ', '-')}`}>
+                                  {row.bandarologi_status}
+                                </span>
+                              ) : (
+                                <span className="text-gray-500 text-xs">-</span>
+                              )}
+                            </td>
+                            <td>{row.date}</td>
+                            <td>
+                              <button 
+                                className="btn-preset active" 
+                                style={{ padding: '0.35rem 0.7rem', fontSize: '0.75rem', background: 'var(--primary-glow)', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setTradeTicker(row.ticker);
+                                  setTradeAction("BUY");
+                                  setTradeQty(100);
+                                  setTradeError("");
+                                  setTradeSuccess("");
+                                  setShowTradeModal(true);
+                                }}
+                              >
+                                Beli
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
           </div>
         )}
 
