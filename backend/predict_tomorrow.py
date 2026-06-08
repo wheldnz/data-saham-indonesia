@@ -131,7 +131,7 @@ def predict_tomorrow():
                 next_day += timedelta(days=1)
             pred_date_str = next_day.strftime('%Y-%m-%d')
             
-            print(f"Data date: {last_data_date.strftime('%Y-%m-%d')} → Prediction for: {pred_date_str}")
+            print(f"Data date: {last_data_date.strftime('%Y-%m-%d')} -> Prediction for: {pred_date_str}")
             history_file = os.path.join(DATA_DIR, 'predictions_history.json')
             
             # Load existing
