@@ -132,51 +132,44 @@ def calculate_technical_features():
             # Volume: SMA 20
             df['volume_sma_20'] = df.ta.sma(close=df['volume'], length=20)
             
-            # --- Save to Database ---
-            features_to_add = []
+            # --- Save to Database using INSERT OR IGNORE ---
+            # Menggunakan raw SQL INSERT OR IGNORE agar tidak crash
+            # saat ada duplikat (bisa terjadi jika script dijalankan ulang).
+            # Ini jauh lebih robust daripada SQLAlchemy ORM add_all().
+            import sqlite3 as _sqlite3
+            raw_conn = _sqlite3.connect(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
+            )
+            raw_cur = raw_conn.cursor()
             
-            # Optimize DB queries: load all existing dates for this ticker at once
-            existing_records = db.query(TechnicalFeature.date).filter(TechnicalFeature.ticker == ticker).all()
-            existing_dates = set(row[0].strftime('%Y-%m-%d') for row in existing_records if row[0] is not None)
-            
+            rows_to_insert = []
             for _, row in df.iterrows():
                 r = row.where(pd.notnull(row), None)
-                
-                # Check date conversion safely
                 date_val = r['date']
                 date_str = date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else str(date_val)
-                
-                if date_str not in existing_dates:
-                    feat = TechnicalFeature(
-                        ticker=ticker,
-                        date=r['date'],
-                        sma_5=r.get('sma_5'),
-                        sma_20=r.get('sma_20'),
-                        sma_50=r.get('sma_50'),
-                        sma_200=r.get('sma_200'),
-                        rsi_7=r.get('rsi_7'),
-                        rsi_14=r.get('rsi_14'),
-                        stoch_k=r.get('stoch_k'),
-                        stoch_d=r.get('stoch_d'),
-                        macd=r.get('macd'),
-                        macd_signal=r.get('macd_signal'),
-                        macd_histogram=r.get('macd_histogram'),
-                        bb_upper=r.get('bb_upper'),
-                        bb_middle=r.get('bb_middle'),
-                        bb_lower=r.get('bb_lower'),
-                        atr_14=r.get('atr_14'),
-                        adx_14=r.get('adx_14'),
-                        obv=r.get('obv'),
-                        volume_sma_20=r.get('volume_sma_20')
-                    )
-                    features_to_add.append(feat)
+                rows_to_insert.append((
+                    ticker, date_str,
+                    r.get('sma_5'), r.get('sma_20'), r.get('sma_50'), r.get('sma_200'),
+                    r.get('rsi_7'), r.get('rsi_14'),
+                    r.get('stoch_k'), r.get('stoch_d'),
+                    r.get('macd'), r.get('macd_signal'), r.get('macd_histogram'),
+                    r.get('bb_upper'), r.get('bb_middle'), r.get('bb_lower'),
+                    r.get('atr_14'), r.get('adx_14'), r.get('obv'), r.get('volume_sma_20')
+                ))
             
-            if features_to_add:
-                db.add_all(features_to_add)
-                
-            # Commit in batches of 50 to minimize disk I/O overhead
-            if idx % 50 == 0 or idx == len(tickers) - 1:
-                db.commit()
+            if rows_to_insert:
+                raw_cur.executemany(
+                    """INSERT OR IGNORE INTO technical_features
+                       (ticker, date, sma_5, sma_20, sma_50, sma_200,
+                        rsi_7, rsi_14, stoch_k, stoch_d,
+                        macd, macd_signal, macd_histogram,
+                        bb_upper, bb_middle, bb_lower,
+                        atr_14, adx_14, obv, volume_sma_20)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    rows_to_insert
+                )
+                raw_conn.commit()
+            raw_conn.close()
                 
         print("Feature Calculation Pipeline Complete!")
         update_pipeline_status("Feature Calculation Complete!", 80)
