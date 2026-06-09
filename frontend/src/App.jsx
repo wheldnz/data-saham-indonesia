@@ -456,7 +456,7 @@ function App() {
             }
           }
           attempts++
-          if (attempts > 60) {
+          if (attempts > 180) {
             clearInterval(interval)
             setRetrainStatus("Retraining timeout.")
             setIsRetraining(false)
