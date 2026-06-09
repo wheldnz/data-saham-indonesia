@@ -103,7 +103,21 @@ def run_pipeline():
             update_status(f"Learning engine loops failed: {err_msg}", 0, False)
             sys.exit(1)
             
-        update_status("Update Complete!", 100, False)
+        # Read the prediction date from daily_ranking.csv to display in the UI status
+        pred_date_str = "Complete"
+        try:
+            import csv
+            csv_path = os.path.join(DATA_DIR, 'daily_ranking.csv')
+            if os.path.exists(csv_path):
+                with open(csv_path, 'r') as f:
+                    reader = csv.DictReader(f)
+                    first_row = next(reader, None)
+                    if first_row and 'date' in first_row:
+                        pred_date_str = f"Complete (Pred untuk {first_row['date']})"
+        except Exception as ec:
+            print(f"Error reading prediction date for status: {ec}")
+            
+        update_status(f"Update Complete! {pred_date_str}", 100, False)
         print("Engine Pipeline Completed Successfully!")
         
     except Exception as e:

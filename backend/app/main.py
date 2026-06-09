@@ -83,6 +83,86 @@ def health_check():
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
 
+# ─────────────────────────────────────────────────────────────
+# [EOD Scheduler Service]
+# ─────────────────────────────────────────────────────────────
+import threading
+import time
+from datetime import datetime
+
+SCHEDULER_CONFIG_PATH = os.path.join(DATA_DIR, 'scheduler_config.json')
+
+def load_scheduler_config():
+    if os.path.exists(SCHEDULER_CONFIG_PATH):
+        try:
+            with open(SCHEDULER_CONFIG_PATH, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"enabled": True}
+
+def save_scheduler_config(config):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SCHEDULER_CONFIG_PATH, 'w') as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        print(f"Error saving scheduler config: {e}")
+
+def trigger_pipeline_background():
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'run_pipeline.py')
+    python_exe = sys.executable
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'venv', 'Scripts', 'python.exe')
+    if os.path.exists(venv_python):
+        python_exe = venv_python
+    print(f"[Scheduler] Triggering pipeline via: {python_exe} {script_path}")
+    subprocess.Popen([python_exe, script_path])
+
+def scheduler_worker():
+    print("[Scheduler] Background scheduler worker thread started.")
+    last_trigger_date = ""
+    
+    while True:
+        try:
+            cfg = load_scheduler_config()
+            if cfg.get("enabled", True):
+                now = datetime.now()
+                # Run Monday to Friday
+                if now.weekday() < 5:
+                    today_str = now.strftime("%Y-%m-%d")
+                    time_str = now.strftime("%H:%M")
+                    
+                    if time_str in ["12:30", "17:45"]:
+                        trigger_key = f"{today_str}_{time_str}"
+                        if last_trigger_date != trigger_key:
+                            # Verify if pipeline is already running first
+                            status_path = os.path.join(DATA_DIR, 'status.json')
+                            is_running = False
+                            if os.path.exists(status_path):
+                                try:
+                                    with open(status_path, 'r') as f:
+                                        status = json.load(f)
+                                        is_running = status.get("is_running", False)
+                                except Exception:
+                                    pass
+                            
+                            if not is_running:
+                                print(f"[Scheduler] Scheduled time reached: {time_str}. Running EOD pipeline...")
+                                trigger_pipeline_background()
+                                last_trigger_date = trigger_key
+                            else:
+                                print(f"[Scheduler] Scheduled time reached: {time_str}, but pipeline is already running. Skipping trigger.")
+                                last_trigger_date = trigger_key
+        except Exception as e:
+            print(f"[Scheduler] Error in worker: {e}")
+        time.sleep(15) # Check every 15 seconds
+
+# Start background scheduler thread
+scheduler_thread = threading.Thread(target=scheduler_worker)
+scheduler_thread.daemon = True
+scheduler_thread.start()
+
+
 @app.get("/api/predictions")
 def get_predictions():
     csv_path = os.path.join(DATA_DIR, 'daily_ranking.csv')
@@ -273,6 +353,19 @@ def trigger_update(background_tasks: BackgroundTasks):
         json.dump({"message": "Initializing update...", "progress": 1, "is_running": True}, f)
         
     return {"status": "started"}
+
+@app.get("/api/scheduler")
+def get_scheduler_status():
+    cfg = load_scheduler_config()
+    return {"enabled": cfg.get("enabled", True), "next_runs": ["12:30 WIB", "17:45 WIB"]}
+
+@app.post("/api/scheduler/toggle")
+def toggle_scheduler():
+    cfg = load_scheduler_config()
+    cfg["enabled"] = not cfg.get("enabled", True)
+    save_scheduler_config(cfg)
+    return {"enabled": cfg["enabled"]}
+
 
 @app.get("/api/chart/{ticker}")
 def get_chart_data(ticker: str):

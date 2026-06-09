@@ -28,7 +28,8 @@ class YFinanceClient:
             # Convert dates to unix timestamps
             period1 = int(datetime.strptime(start_date, '%Y-%m-%d').timestamp())
             if end_date:
-                period2 = int(datetime.strptime(end_date, '%Y-%m-%d').timestamp())
+                # Add 86399 seconds (23h 59m 59s) to make the end_date inclusive
+                period2 = int(datetime.strptime(end_date, '%Y-%m-%d').timestamp()) + 86399
             else:
                 period2 = int(datetime.now().timestamp())
                 
