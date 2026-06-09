@@ -335,9 +335,12 @@ function App() {
     }
   }, [activeTab])
 
-  const fetchPredictions = async () => {
+  const fetchPredictions = async (horizon = predictionHorizon) => {
     try {
-      const res = await fetch('http://localhost:8000/api/predictions')
+      const endpoint = horizon === 'Oversold'
+        ? 'http://localhost:8000/api/predictions/oversold'
+        : 'http://localhost:8000/api/predictions';
+      const res = await fetch(endpoint)
       const data = await res.json()
       setPredictions(data.data || [])
       if (data.data && data.data.length > 0 && !selectedTicker && activeTab === 'screener') {
@@ -826,7 +829,10 @@ function App() {
                     border: '1px solid rgba(255,255,255,0.1)',
                     color: '#fff'
                   }}
-                  onClick={() => setPredictionHorizon('T+1')}
+                  onClick={() => {
+                    setPredictionHorizon('T+1');
+                    fetchPredictions('T+1');
+                  }}
                 >
                   Horizon T+1 (Harian)
                 </button>
@@ -842,9 +848,31 @@ function App() {
                     border: '1px solid rgba(255,255,255,0.1)',
                     color: '#fff'
                   }}
-                  onClick={() => setPredictionHorizon('T+3')}
+                  onClick={() => {
+                    setPredictionHorizon('T+3');
+                    fetchPredictions('T+3');
+                  }}
                 >
                   Horizon T+3 (Swing 3-Hari)
+                </button>
+                <button 
+                  className={`btn-preset ${predictionHorizon === 'Oversold' ? 'active' : ''}`}
+                  style={{ 
+                    padding: '0.4rem 0.8rem', 
+                    fontSize: '0.8rem', 
+                    borderRadius: '6px', 
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    background: predictionHorizon === 'Oversold' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff'
+                  }}
+                  onClick={() => {
+                    setPredictionHorizon('Oversold');
+                    fetchPredictions('Oversold');
+                  }}
+                >
+                  Oversold Bounce (Pantulan Jenuh Jual)
                 </button>
               </div>
             </div>

@@ -12,8 +12,10 @@ from pattern_scanner import detect_candlestick_patterns
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 MODEL_T1_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
 MODEL_T3_PATH = os.path.join(DATA_DIR, 'xgb_model_t3.joblib')
+MODEL_OVERSOLD_PATH = os.path.join(DATA_DIR, 'xgb_model_oversold.joblib')
 FEATURES_LIST_PATH = os.path.join(DATA_DIR, 'features_list.joblib')
 OUTPUT_PATH = os.path.join(DATA_DIR, 'daily_ranking.csv')
+OVERSOLD_OUTPUT_PATH = os.path.join(DATA_DIR, 'oversold_ranking.csv')
 
 def update_pipeline_status(message, progress, is_running=True):
     import json
@@ -30,15 +32,16 @@ def update_pipeline_status(message, progress, is_running=True):
         print(f"Error writing status file: {e}")
 
 def predict_tomorrow():
-    if not os.path.exists(MODEL_T1_PATH) or not os.path.exists(MODEL_T3_PATH) or not os.path.exists(FEATURES_LIST_PATH):
+    if not os.path.exists(MODEL_T1_PATH) or not os.path.exists(MODEL_T3_PATH) or not os.path.exists(MODEL_OVERSOLD_PATH) or not os.path.exists(FEATURES_LIST_PATH):
         print("Model files not found. Please run train_model.py first.")
         update_pipeline_status("Model files not found. Run training first.", 0, False)
         return
         
-    print("Loading XGBoost Models (T+1 and T+3)...")
+    print("Loading XGBoost Models (T+1, T+3, and Oversold Bounce)...")
     update_pipeline_status("AI is generating Top 10 Predictions...", 80)
     model_t1 = joblib.load(MODEL_T1_PATH)
     model_t3 = joblib.load(MODEL_T3_PATH)
+    model_ov = joblib.load(MODEL_OVERSOLD_PATH)
     features_list = joblib.load(FEATURES_LIST_PATH)
     
     print("Connecting to database using sqlite3...")
@@ -206,6 +209,38 @@ def predict_tomorrow():
         
         df_ranked.to_csv(OUTPUT_PATH, index=False)
         print(f"Full ranking saved to {OUTPUT_PATH}")
+
+        # ─────────────────────────────────────────────────────────────
+        # [Oversold Bounce specialized predictions]
+        # ─────────────────────────────────────────────────────────────
+        print("Generating specialized predictions for oversold stocks...")
+        df_latest_ov = df_latest[df_latest['rsi_14'] <= 35].copy()
+        
+        if df_latest_ov.empty:
+            print("No oversold stocks found today to generate specialized rankings.")
+            df_ranked_ov = pd.DataFrame(columns=['ticker', 'date', 'close', 'prob_up', 'prob_up_raw', 'patterns', 'rank'])
+            df_ranked_ov.to_csv(OVERSOLD_OUTPUT_PATH, index=False)
+        else:
+            probs_ov = model_ov.predict_proba(df_latest_ov[features_list])[:, 1]
+            df_latest_ov['prob_up'] = probs_ov
+            df_latest_ov['prob_up_raw'] = probs_ov
+            
+            df_ranked_ov = df_latest_ov[['ticker', 'date', 'close', 'prob_up', 'prob_up_raw', 'patterns']].copy()
+            df_ranked_ov.sort_values(by='prob_up', ascending=False, inplace=True)
+            df_ranked_ov['rank'] = range(1, len(df_ranked_ov) + 1)
+            
+            # Format outputs
+            df_ranked_ov['prob_up'] = (df_ranked_ov['prob_up'] * 100).round(2).astype(str) + '%'
+            
+            # Adjust date to T+1
+            try:
+                date_str = next_bd.strftime('%Y-%m-%d') if 'next_bd' in locals() else str(df_latest_ov['date'].iloc[0].strftime('%Y-%m-%d'))
+                df_ranked_ov['date'] = date_str
+            except Exception:
+                pass
+                
+            df_ranked_ov.to_csv(OVERSOLD_OUTPUT_PATH, index=False)
+            print(f"Oversold ranking saved to {OVERSOLD_OUTPUT_PATH}")
         
     except Exception as e:
         print(f"Error predicting: {e}")

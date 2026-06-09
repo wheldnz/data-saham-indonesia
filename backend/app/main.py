@@ -125,6 +125,48 @@ def get_predictions():
     return {"data": sanitize_json_data(data)}
 
 
+@app.get("/api/predictions/oversold")
+def get_oversold_predictions():
+    csv_path = os.path.join(DATA_DIR, 'oversold_ranking.csv')
+    if not os.path.exists(csv_path):
+        return {"data": []}
+    
+    df = pd.read_csv(csv_path)
+    df = df.replace([float('inf'), float('-inf')], None).fillna('')
+    data = df.to_dict(orient="records")
+    
+    # Inject latest Bandarologi accumulation status
+    import sqlite3
+    db_path = os.path.join(DATA_DIR, '..', 'alphahunter.db')
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
+        try:
+            query = '''
+                SELECT ticker, acum_status, acum_score
+                FROM broker_summaries
+                WHERE (ticker, date) IN (
+                    SELECT ticker, MAX(date)
+                    FROM broker_summaries
+                    GROUP BY ticker
+                )
+            '''
+            df_bs = pd.read_sql_query(query, conn)
+            status_map = {row['ticker']: (row['acum_status'], row['acum_score']) for _, row in df_bs.iterrows()}
+            
+            for record in data:
+                ticker_val = record.get("Ticker") or record.get("ticker")
+                if ticker_val:
+                    acum_status, acum_score = status_map.get(ticker_val, ("Neutral", 50.0))
+                    record["bandarologi_status"] = acum_status
+                    record["bandarologi_score"] = acum_score
+        except Exception as e:
+            print("Error injecting bandarologi in oversold predictions:", e)
+        finally:
+            conn.close()
+            
+    return {"data": sanitize_json_data(data)}
+
+
 @app.get("/api/bandarologi/{ticker}")
 def get_bandarologi_data(ticker: str):
     import sqlite3
