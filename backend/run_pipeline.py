@@ -3,7 +3,10 @@ import os
 import subprocess
 import json
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+# Ensure we run in the backend directory
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+DATA_DIR = os.path.join(os.getcwd(), 'data')
 STATUS_FILE = os.path.join(DATA_DIR, 'status.json')
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -28,7 +31,7 @@ def run_pipeline():
         # 1. Ingest Data
         update_status("Checking and ingesting latest market data...", 5)
         print(f"Running ingest_data.py with {python_exe}...")
-        res = subprocess.run([python_exe, "ingest_data.py"], capture_output=True, text=True, timeout=300)
+        res = subprocess.run([python_exe, "ingest_data.py"], capture_output=True, text=True, timeout=900)
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr, file=sys.stderr)
@@ -39,7 +42,7 @@ def run_pipeline():
         # 2. Feature Store
         update_status("Calculating Technical Indicators...", 60)
         print(f"Running calculate_features.py with {python_exe}...")
-        res = subprocess.run([python_exe, "calculate_features.py"], capture_output=True, text=True, timeout=300)
+        res = subprocess.run([python_exe, "calculate_features.py"], capture_output=True, text=True, timeout=1200)
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr, file=sys.stderr)
@@ -53,7 +56,7 @@ def run_pipeline():
         res = subprocess.run([
             python_exe, "-c", 
             "from app.services.bandarologi_service import calculate_broker_summaries; from app.db.database import SessionLocal; db = SessionLocal(); calculate_broker_summaries(db); db.close()"
-        ], capture_output=True, text=True, timeout=180)
+        ], capture_output=True, text=True, timeout=600)
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr, file=sys.stderr)
@@ -64,7 +67,7 @@ def run_pipeline():
         # 3. Predict
         update_status("AI is generating Top 10 Predictions...", 80)
         print(f"Running predict_tomorrow.py with {python_exe}...")
-        res = subprocess.run([python_exe, "predict_tomorrow.py"], capture_output=True, text=True, timeout=120)
+        res = subprocess.run([python_exe, "predict_tomorrow.py"], capture_output=True, text=True, timeout=600)
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr, file=sys.stderr)
@@ -78,7 +81,7 @@ def run_pipeline():
         res = subprocess.run([
             python_exe, "-c", 
             "from app.services.scoring_service import calculate_all_scores; from app.db.database import SessionLocal; db = SessionLocal(); calculate_all_scores(db); db.close()"
-        ], capture_output=True, text=True, timeout=180)
+        ], capture_output=True, text=True, timeout=600)
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr, file=sys.stderr)
@@ -92,7 +95,7 @@ def run_pipeline():
         res = subprocess.run([
             python_exe, "-c", 
             "from app.services.learning_engine import evaluate_predictions, detect_market_regime, check_and_trigger_retraining; evaluate_predictions(); detect_market_regime(); check_and_trigger_retraining()"
-        ], capture_output=True, text=True, timeout=180)
+        ], capture_output=True, text=True, timeout=600)
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr, file=sys.stderr)

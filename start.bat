@@ -41,7 +41,7 @@ echo [OK] Node.js packages ditemukan.
 :: [3] Jalankan Backend FastAPI (window baru)
 :: ─────────────────────────────────────────────
 echo [3/4] Menjalankan Backend FastAPI di port 8000...
-start "AlphaHunter-Backend" /D "%~dp0backend" start_backend.bat
+start "AlphaHunter-Backend" /D "%~dp0backend" cmd /k start_backend.bat
 
 echo Menunggu backend siap...
 ping -n 4 127.0.0.1 >nul

@@ -26,6 +26,7 @@ def update_pipeline_status(message, progress, is_running=True):
 def calculate_technical_features():
     print("Connecting to database...")
     db = SessionLocal()
+    raw_conn = None
     
     try:
         from sqlalchemy import func
@@ -41,6 +42,13 @@ def calculate_technical_features():
         
         max_feat_query = db.query(TechnicalFeature.ticker, func.max(TechnicalFeature.date)).group_by(TechnicalFeature.ticker).all()
         max_feat_dates = {ticker: max_date for ticker, max_date in max_feat_query}
+        
+        # Open sqlite3 connection once for high-performance bulk insertions
+        import sqlite3 as _sqlite3
+        raw_conn = _sqlite3.connect(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
+        )
+        raw_cur = raw_conn.cursor()
         
         for idx, ticker in enumerate(tickers):
             progress_pct = int(60 + (idx / len(tickers)) * 20)
@@ -136,17 +144,17 @@ def calculate_technical_features():
             # Menggunakan raw SQL INSERT OR IGNORE agar tidak crash
             # saat ada duplikat (bisa terjadi jika script dijalankan ulang).
             # Ini jauh lebih robust daripada SQLAlchemy ORM add_all().
-            import sqlite3 as _sqlite3
-            raw_conn = _sqlite3.connect(
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
-            )
-            raw_cur = raw_conn.cursor()
-            
             rows_to_insert = []
+            max_feat_str = max_feat.strftime('%Y-%m-%d') if hasattr(max_feat, 'strftime') else str(max_feat) if max_feat else None
             for _, row in df.iterrows():
                 r = row.where(pd.notnull(row), None)
                 date_val = r['date']
                 date_str = date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else str(date_val)
+                
+                # Only insert new feature rows to avoid SQLite processing massive duplicate histories
+                if max_feat_str and date_str <= max_feat_str:
+                    continue
+                    
                 rows_to_insert.append((
                     ticker, date_str,
                     r.get('sma_5'), r.get('sma_20'), r.get('sma_50'), r.get('sma_200'),
@@ -168,14 +176,26 @@ def calculate_technical_features():
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     rows_to_insert
                 )
-                raw_conn.commit()
-            raw_conn.close()
+                # Commit in batches of 50 to keep it fast
+                if idx % 50 == 0 or idx == len(tickers) - 1:
+                    raw_conn.commit()
                 
+        if raw_conn:
+            raw_conn.commit()
+            raw_conn.close()
+            raw_conn = None
+            
         print("Feature Calculation Pipeline Complete!")
         update_pipeline_status("Feature Calculation Complete!", 80)
         
     except Exception as e:
         db.rollback()
+        if raw_conn:
+            try:
+                raw_conn.rollback()
+                raw_conn.close()
+            except:
+                pass
         print(f"Error calculating features: {e}")
     finally:
         db.close()
