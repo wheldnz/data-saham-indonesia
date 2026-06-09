@@ -35,7 +35,7 @@ def train_model():
     # ─────────────────────────────────────────────────────────────
     # Define Features (X)
     # ─────────────────────────────────────────────────────────────
-    drop_cols = ['ticker', 'date', 'target_1d_up', 'target_3d_up']
+    drop_cols = ['ticker', 'date', 'target_1d_up', 'target_3d_up', 'open', 'high', 'low']
     feature_cols = [c for c in df.columns if c not in drop_cols]
 
     print(f"\nUsing {len(feature_cols)} features: {feature_cols}")

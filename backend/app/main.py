@@ -404,10 +404,10 @@ def get_chart_data(ticker: str):
         conn.close()
 
 @app.get("/api/backtest")
-def run_backtest_api(days: int = 100):
+def run_backtest_api(days: int = 100, capital: float = 100000000.0, strategy: str = "T1_top5", sl: float = 5.0, tp: float = 10.0):
     try:
         from backtest_engine import run_backtest
-        result = run_backtest(days_back=days)
+        result = run_backtest(days_back=days, initial_capital=capital, strategy=strategy, stop_loss_pct=sl, take_profit_pct=tp)
         return sanitize_json_data(result)
     except Exception as e:
         return {"error": str(e)}

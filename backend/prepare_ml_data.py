@@ -24,7 +24,7 @@ def prepare_ml_data():
         # ─────────────────────────────────────────────────────────────
         print("Loading OHLCV data...")
         df_ohlcv = pd.read_sql_query(
-            'SELECT ticker, date, close, volume, value FROM daily_ohlcv', conn
+            'SELECT ticker, date, open, high, low, close, volume, value FROM daily_ohlcv', conn
         )
 
         print("Loading Technical Features...")

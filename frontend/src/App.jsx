@@ -401,16 +401,26 @@ function App() {
     }
   }
 
+  const [backtestStrategy, setBacktestStrategy] = useState("T1_top5")
+  const [backtestCapital, setBacktestCapital] = useState("100000000")
+  const [backtestSl, setBacktestSl] = useState("5.0")
+  const [backtestTp, setBacktestTp] = useState("10.0")
+  const [backtestDays, setBacktestDays] = useState(100)
+  const [backtestSearch, setBacktestSearch] = useState("")
+
   const handleRunBacktest = async () => {
     setIsBacktesting(true);
     try {
-      const res = await fetch('http://localhost:8000/api/backtest?days=100');
+      const res = await fetch(`http://localhost:8000/api/backtest?days=${backtestDays}&capital=${backtestCapital}&strategy=${backtestStrategy}&sl=${backtestSl}&tp=${backtestTp}`);
       const data = await res.json();
-      if(!data.error) {
+      if (!data.error) {
         setBacktestData(data);
+      } else {
+        alert("Gagal menjalankan backtest: " + data.error);
       }
     } catch (e) {
       console.error(e);
+      alert("Terjadi kesalahan koneksi saat menjalankan backtest.");
     }
     setIsBacktesting(false);
   }
@@ -788,11 +798,20 @@ function App() {
         >
           AI LEARNING ENGINE
         </button>
+        <button 
+          className={`tab-button ${activeTab === 'backtest' ? 'active' : ''}`}
+          onClick={() => {
+            setActiveTab('backtest');
+            setSelectedTicker(null);
+          }}
+        >
+          📈 BACKTEST SIMULATOR
+        </button>
       </div>
 
       <div className="dashboard">
         {/* Controls Panel */}
-        {activeTab !== 'learning' && activeTab !== 'portfolio' && (
+        {activeTab !== 'learning' && activeTab !== 'portfolio' && activeTab !== 'backtest' && (
           <div className="glass-panel controls">
             <h2>Engine Controls</h2>
             <div className="status-container">
@@ -2357,6 +2376,357 @@ function App() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'backtest' && (
+          /* Backtest Panel */
+          <div style={{ gridColumn: 'span 2', display: 'grid', gridTemplateColumns: '1fr 3fr', gap: '1.5rem', animation: 'fadeIn 0.3s ease' }}>
+            {/* Sidebar Controls */}
+            <div className="glass-panel" style={{ height: 'fit-content', display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+              <h2>Backtest Settings</h2>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>Strategi Model</label>
+                <select 
+                  value={backtestStrategy}
+                  onChange={(e) => setBacktestStrategy(e.target.value)}
+                  style={{
+                    padding: '0.6rem',
+                    background: 'rgba(0,0,0,0.4)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '6px',
+                    color: '#fff',
+                    outline: 'none'
+                  }}
+                >
+                  <option value="T1_top5">Horizon T+1 Daily Momentum (Top 5)</option>
+                  <option value="T3_top5">Horizon T+3 Swing Trend (Top 5)</option>
+                  <option value="OVERSOLD_top5">Oversold Bounce Rebounds (Top 5)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>Modal Awal (Rp)</label>
+                <input 
+                  type="number"
+                  value={backtestCapital}
+                  onChange={(e) => setBacktestCapital(e.target.value)}
+                  placeholder="Rp 100,000,000"
+                  style={{
+                    padding: '0.6rem',
+                    background: 'rgba(0,0,0,0.4)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '6px',
+                    color: '#fff',
+                    outline: 'none'
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', flex: 1 }}>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>Stop Loss (%)</label>
+                  <input 
+                    type="number"
+                    step="0.5"
+                    value={backtestSl}
+                    onChange={(e) => setBacktestSl(e.target.value)}
+                    placeholder="5.0"
+                    style={{
+                      padding: '0.6rem',
+                      background: 'rgba(0,0,0,0.4)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: '6px',
+                      color: '#fff',
+                      outline: 'none'
+                    }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', flex: 1 }}>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>Take Profit (%)</label>
+                  <input 
+                    type="number"
+                    step="0.5"
+                    value={backtestTp}
+                    onChange={(e) => setBacktestTp(e.target.value)}
+                    placeholder="10.0"
+                    style={{
+                      padding: '0.6rem',
+                      background: 'rgba(0,0,0,0.4)',
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      borderRadius: '6px',
+                      color: '#fff',
+                      outline: 'none'
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>
+                  <span>Periode Simulasi</span>
+                  <span style={{ color: 'var(--primary-glow)' }}>{backtestDays} Hari</span>
+                </label>
+                <input 
+                  type="range"
+                  min="20"
+                  max="250"
+                  step="10"
+                  value={backtestDays}
+                  onChange={(e) => setBacktestDays(parseInt(e.target.value))}
+                  style={{ accentColor: 'var(--primary-glow)', cursor: 'pointer' }}
+                />
+              </div>
+
+              <button 
+                className={`btn-update ${isBacktesting ? 'running' : ''}`}
+                onClick={handleRunBacktest}
+                disabled={isBacktesting}
+                style={{ marginTop: '0.8rem' }}
+              >
+                {isBacktesting ? 'RUNNING SIMULATION...' : 'RUN BACKTEST'}
+              </button>
+            </div>
+
+            {/* Results Dashboard */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              {!backtestData ? (
+                <div className="glass-panel" style={{ height: '300px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', color: '#8b9bb4', textAlign: 'center', padding: '2rem' }}>
+                  <span style={{ fontSize: '3rem', marginBottom: '1rem' }}>📈</span>
+                  <h3 style={{ color: '#fff', margin: '0 0 0.5rem 0' }}>Backtest Simulator Belum Dijalankan</h3>
+                  <p style={{ margin: 0, fontSize: '0.85rem', maxWidth: '400px' }}>
+                    Tentukan strategi dan parameter risiko Anda pada panel sebelah kiri, lalu klik <strong>RUN BACKTEST</strong> untuk mensimulasikan performa historis portofolio.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* Summary Stats Cards */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+                    <div className="glass-panel" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#8b9bb4' }}>TOTAL RETURN</span>
+                      <span style={{ fontSize: '1.6rem', fontWeight: 'bold', color: backtestData.total_return_pct >= 0 ? '#00d2ff' : '#ef4444' }}>
+                        {backtestData.total_return_pct >= 0 ? '+' : ''}{backtestData.total_return_pct}%
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                        Rp {Number(backtestData.final_value).toLocaleString('id-ID')} akhir
+                      </span>
+                    </div>
+
+                    <div className="glass-panel" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#8b9bb4' }}>WIN RATE</span>
+                      <span style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#10b981' }}>
+                        {backtestData.win_rate}%
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                        {backtestData.total_trades} total transaksi
+                      </span>
+                    </div>
+
+                    <div className="glass-panel" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#8b9bb4' }}>MAX DRAWDOWN</span>
+                      <span style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#ef4444' }}>
+                        {backtestData.max_drawdown_pct}%
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                        Penurunan maksimum modal
+                      </span>
+                    </div>
+
+                    <div className="glass-panel" style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#8b9bb4' }}>SHARPE RATIO</span>
+                      <span style={{ fontSize: '1.6rem', fontWeight: 'bold', color: backtestData.sharpe_ratio >= 1.0 ? '#10b981' : '#f59e0b' }}>
+                        {backtestData.sharpe_ratio}
+                      </span>
+                      <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                        Rasio risk-adjusted return
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Equity Curve Chart */}
+                  <div className="glass-panel">
+                    <h2>Portfolio Growth vs IHSG Index Benchmark</h2>
+                    {(() => {
+                      const equityCurve = backtestData.equity_curve || [];
+                      const benchmarkCurve = backtestData.benchmark_curve || [];
+                      const allValues = [...equityCurve.map(d => d.value), ...benchmarkCurve.map(d => d.value)];
+                      if (allValues.length === 0) return <div className="no-data">No chart data available.</div>;
+                      
+                      let minY = Math.min(...allValues);
+                      let maxY = Math.max(...allValues);
+                      const rangeY = maxY - minY;
+                      minY = Math.max(0, Math.floor(minY - rangeY * 0.05));
+                      maxY = Math.ceil(maxY + rangeY * 0.05);
+                      
+                      const width = 800;
+                      const height = 250;
+                      const padLeft = 85;
+                      const padRight = 20;
+                      const padTop = 15;
+                      const padBottom = 30;
+                      const cWidth = width - padLeft - padRight;
+                      const cHeight = height - padTop - padBottom;
+                      
+                      const getX = (idx, total) => padLeft + (idx / (total - 1)) * cWidth;
+                      const getY = (val) => height - padBottom - ((val - minY) / (maxY - minY)) * cHeight;
+                      
+                      let eqPath = '';
+                      equityCurve.forEach((d, idx) => {
+                        const x = getX(idx, equityCurve.length);
+                        const y = getY(d.value);
+                        eqPath += (idx === 0 ? 'M' : 'L') + ` ${x} ${y}`;
+                      });
+                      
+                      let bmPath = '';
+                      benchmarkCurve.forEach((d, idx) => {
+                        const x = getX(idx, benchmarkCurve.length);
+                        const y = getY(d.value);
+                        bmPath += (idx === 0 ? 'M' : 'L') + ` ${x} ${y}`;
+                      });
+                      
+                      const grids = [];
+                      const steps = 4;
+                      for (let i = 0; i <= steps; i++) {
+                        const val = minY + (i / steps) * (maxY - minY);
+                        const y = getY(val);
+                        grids.push(
+                          <g key={i}>
+                            <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="rgba(255, 255, 255, 0.05)" />
+                            <text x={padLeft - 10} y={y + 3} fill="#8b9bb4" fontSize="8" textAnchor="end">
+                              Rp {Math.round(val).toLocaleString('id-ID')}
+                            </text>
+                          </g>
+                        );
+                      }
+                      
+                      const dates = [];
+                      const interval = Math.max(1, Math.floor(equityCurve.length / 5));
+                      equityCurve.forEach((d, idx) => {
+                        if (idx % interval === 0 || idx === equityCurve.length - 1) {
+                          const x = getX(idx, equityCurve.length);
+                          dates.push(
+                            <text key={idx} x={x} y={height - 5} fill="#8b9bb4" fontSize="8" textAnchor="middle">
+                              {d.time.substring(5)}
+                            </text>
+                          );
+                        }
+                      });
+                      
+                      return (
+                        <div style={{ height: '270px', width: '100%', position: 'relative', marginTop: '1rem' }}>
+                          <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
+                            {grids}
+                            {dates}
+                            
+                            {/* IHSG Line */}
+                            <path d={bmPath} fill="none" stroke="rgba(168, 85, 247, 0.2)" strokeWidth="4" />
+                            <path d={bmPath} fill="none" stroke="#a855f7" strokeWidth="1.5" />
+                            
+                            {/* Portfolio Line */}
+                            <path d={eqPath} fill="none" stroke="rgba(0, 210, 255, 0.3)" strokeWidth="5" />
+                            <path d={eqPath} fill="none" stroke="var(--primary-glow)" strokeWidth="2" />
+                          </svg>
+                          
+                          <div style={{ display: 'flex', gap: '1.5rem', justifyContent: 'center', fontSize: '0.75rem', marginTop: '0.2rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--primary-glow)' }} />
+                              <span style={{ color: '#fff' }}>Portfolio Equity ({backtestData.total_return_pct >= 0 ? '+' : ''}{backtestData.total_return_pct}%)</span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#a855f7' }} />
+                              <span style={{ color: '#fff' }}>IHSG Benchmark Index</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Simulated Trades Table */}
+                  <div className="glass-panel">
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.8rem' }}>
+                      <h2 style={{ margin: 0 }}>Simulated Trade Logs</h2>
+                      <input 
+                        type="text"
+                        value={backtestSearch}
+                        onChange={(e) => setBacktestSearch(e.target.value)}
+                        placeholder="Cari Ticker (cth: BBRI)..."
+                        style={{
+                          padding: '0.4rem 0.8rem',
+                          background: 'rgba(0,0,0,0.3)',
+                          border: '1px solid rgba(255,255,255,0.08)',
+                          borderRadius: '6px',
+                          color: '#fff',
+                          outline: 'none',
+                          fontSize: '0.85rem',
+                          width: '200px'
+                        }}
+                      />
+                    </div>
+
+                    {(() => {
+                      const filteredTrades = backtestSearch.trim() !== "" 
+                        ? (backtestData.trades || []).filter(t => t.ticker.toUpperCase().includes(backtestSearch.trim().toUpperCase()))
+                        : (backtestData.trades || []);
+                        
+                      if (filteredTrades.length === 0) {
+                        return <div className="no-data">Tidak ada transaksi yang cocok dengan filter pencarian.</div>;
+                      }
+                      
+                      return (
+                        <div className="table-responsive" style={{ maxHeight: '350px', overflowY: 'auto' }}>
+                          <table className="pred-table" style={{ fontSize: '0.85rem' }}>
+                            <thead>
+                              <tr>
+                                <th>Ticker</th>
+                                <th>Entry Date</th>
+                                <th>Exit Date</th>
+                                <th>Entry Price</th>
+                                <th>Exit Price</th>
+                                <th>Return (%)</th>
+                                <th>Exit Status</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filteredTrades.map((t, idx) => (
+                                <tr key={idx}>
+                                  <td className="ticker-col">{t.ticker}</td>
+                                  <td>{t.entry_date}</td>
+                                  <td>{t.exit_date}</td>
+                                  <td>Rp {Number(t.entry_price).toLocaleString('id-ID')}</td>
+                                  <td>Rp {Number(t.exit_price).toLocaleString('id-ID')}</td>
+                                  <td style={{ color: t.return_pct >= 0 ? '#10b981' : '#ef4444', fontWeight: 'bold' }}>
+                                    {t.return_pct >= 0 ? '+' : ''}{t.return_pct}%
+                                  </td>
+                                  <td>
+                                    <span className={`badge ${
+                                      t.status === 'TP' ? 'badge-bullish' : 
+                                      t.status === 'SL' ? 'badge-bearish' : 
+                                      t.status === 'EXPIRED' ? 'badge-expired' : 'badge-neutral'
+                                    }`} style={{
+                                      padding: '2px 6px',
+                                      borderRadius: '4px',
+                                      fontSize: '0.7rem',
+                                      fontWeight: 'bold',
+                                      background: t.status === 'TP' ? 'rgba(16, 185, 129, 0.15)' : t.status === 'SL' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                                      color: t.status === 'TP' ? '#10b981' : t.status === 'SL' ? '#ef4444' : '#3b82f6',
+                                      border: t.status === 'TP' ? '1px solid rgba(16, 185, 129, 0.3)' : t.status === 'SL' ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(59, 130, 246, 0.3)'
+                                    }}>
+                                      {t.status}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}

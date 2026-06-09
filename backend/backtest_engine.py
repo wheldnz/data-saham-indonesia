@@ -1,114 +1,365 @@
-import sqlite3
-import pandas as pd
-import numpy as np
-import joblib
 import os
+import sys
+import json
+import joblib
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+
+# Ensure parent directory is in path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
-MODEL_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
+MODEL_T1_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
+MODEL_T3_PATH = os.path.join(DATA_DIR, 'xgb_model_t3.joblib')
+MODEL_OVERSOLD_PATH = os.path.join(DATA_DIR, 'xgb_model_oversold.joblib')
 FEATURES_LIST_PATH = os.path.join(DATA_DIR, 'features_list.joblib')
 
-def run_backtest(days_back=100):
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(FEATURES_LIST_PATH):
-        return {"error": "Model or features DB not found. Please run update first."}
+def get_benchmark_curve(start_date_str, end_date_str, initial_capital, cron_dates):
+    """Fetches IHSG (^JKSE) historical index data and maps it to a baseline index."""
+    try:
+        from app.services.yfinance_client import yfinance_client
+        df_ihsg = yfinance_client.fetch_historical_data('^JKSE', start_date_str, end_date_str)
         
-    model = joblib.load(MODEL_PATH)
+        benchmark_curve = []
+        if df_ihsg.empty:
+            print("[Backtest] Benchmark data is empty, using flat fallback.")
+            for dt in cron_dates:
+                benchmark_curve.append({"time": dt, "value": initial_capital})
+            return benchmark_curve
+            
+        df_ihsg['date_str'] = pd.to_datetime(df_ihsg['Date']).dt.strftime('%Y-%m-%d')
+        ihsg_map = {row.date_str: row.Close for row in df_ihsg.itertuples()}
+        
+        # Find first valid value to anchor
+        first_val = None
+        for dt in cron_dates:
+            if dt in ihsg_map:
+                first_val = ihsg_map[dt]
+                break
+        
+        if not first_val:
+            first_val = list(ihsg_map.values())[0] if ihsg_map else 7000.0
+            
+        last_val = first_val
+        for dt in cron_dates:
+            close_val = ihsg_map.get(dt, last_val)
+            if close_val is None or pd.isna(close_val):
+                close_val = last_val
+            last_val = close_val
+            
+            indexed_val = initial_capital * (close_val / first_val)
+            benchmark_curve.append({"time": dt, "value": round(float(indexed_val), 2)})
+            
+        return benchmark_curve
+    except Exception as e:
+        print(f"[Backtest] Error fetching benchmark index: {e}")
+        return [{"time": dt, "value": initial_capital} for dt in cron_dates]
+
+def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5', stop_loss_pct=5.0, take_profit_pct=10.0):
+    """
+    Simulates portfolio trading using predictions.
+    Supports SL/TP, custom capital, and different model strategies.
+    """
+    # Load model configuration
+    if strategy == 'T1_top5':
+        model_path = MODEL_T1_PATH
+        holding_days = 1
+    elif strategy == 'T3_top5':
+        model_path = MODEL_T3_PATH
+        holding_days = 3
+    elif strategy == 'OVERSOLD_top5':
+        model_path = MODEL_OVERSOLD_PATH
+        holding_days = 3
+    else:
+        return {"error": f"Unknown strategy: {strategy}"}
+
+    if not os.path.exists(model_path) or not os.path.exists(FEATURES_LIST_PATH):
+        return {"error": "Model files or features list not found. Run training first."}
+        
+    model = joblib.load(model_path)
     features_list = joblib.load(FEATURES_LIST_PATH)
     
+    dataset_path = os.path.join(DATA_DIR, 'ml_dataset.csv')
+    if not os.path.exists(dataset_path):
+        return {"error": "ML dataset file not found."}
+        
     try:
-        print("Loading dataset from CSV...")
-        dataset_path = os.path.join(DATA_DIR, 'ml_dataset.csv')
-        if not os.path.exists(dataset_path):
-            return {"error": "ML dataset not found. Run update first."}
+        # Load and sort data
+        df = pd.read_csv(dataset_path)
+        df['date'] = pd.to_datetime(df['date'])
+        df.sort_values(by=['date', 'ticker'], inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        
+        all_dates = sorted(df['date'].unique())
+        if len(all_dates) < days_back:
+            days_back = len(all_dates)
             
-        df_merged = pd.read_csv(dataset_path)
-        df_merged['date'] = pd.to_datetime(df_merged['date']).dt.strftime('%Y-%m-%d')
+        # Get simulated date range
+        test_dates = all_dates[-days_back:]
+        start_date = test_dates[0]
+        end_date = test_dates[-1]
         
-        # Filter for the last N dates
-        unique_dates = sorted(df_merged['date'].unique(), reverse=True)
-        if len(unique_dates) == 0:
-            return {"error": "No data in dataset."}
-            
-        target_dates = unique_dates[:days_back+15]
-        min_date = target_dates[-1]
+        start_date_str = start_date.strftime('%Y-%m-%d')
+        end_date_str = end_date.strftime('%Y-%m-%d')
+        cron_dates = [d.strftime('%Y-%m-%d') for d in test_dates]
         
-        df_merged = df_merged[df_merged['date'] >= min_date].copy()
-        print(f"Loaded {len(df_merged)} rows from {min_date}")
+        print(f"[Backtest] Simulating {strategy} from {start_date_str} to {end_date_str} ({days_back} days)...")
         
-        df_merged = df_merged.dropna(subset=features_list)
-        print(f"Clean size: {len(df_merged)}")
+        # Load prices lookup dictionary for extremely fast daily checks
+        prices_df = df[['ticker', 'date', 'open', 'high', 'low', 'close']].copy()
+        prices_df['date_str'] = prices_df['date'].dt.strftime('%Y-%m-%d')
         
-        if df_merged.empty:
-            return {"error": "No valid feature rows found."}
-            
-        # Predict probabilities
-        print("Predicting probabilities...")
-        X = df_merged[features_list]
-        probs = model.predict_proba(X)[:, 1]
-        df_merged['prob_up'] = probs
-        print("Ranking top 5...")
-        
-        # Rank top 5 per date
-        df_merged['rank'] = df_merged.groupby('date')['prob_up'].rank(ascending=False, method='first')
-        top5_df = df_merged[df_merged['rank'] <= 5].copy()
-        
-        # Get prices to calculate T+1, T+3, T+5, T+10
-        prices_df = df_merged[['ticker', 'date', 'close']].sort_values(['ticker', 'date']).reset_index(drop=True)
-        
-        prices_df['close_t0'] = prices_df['close']
-        prices_df['close_t1'] = prices_df.groupby('ticker')['close'].shift(-1)
-        prices_df['close_t3'] = prices_df.groupby('ticker')['close'].shift(-3)
-        prices_df['close_t5'] = prices_df.groupby('ticker')['close'].shift(-5)
-        prices_df['close_t10'] = prices_df.groupby('ticker')['close'].shift(-10)
-        
-        # Merge top5 predictions with future prices
-        merged = pd.merge(top5_df[['ticker', 'date', 'prob_up']], prices_df, on=['ticker', 'date'], how='left')
-        
-        # Calculate returns (Buy at Close T+0, Sell at Close T+N)
-        merged['ret_t1'] = (merged['close_t1'] - merged['close_t0']) / merged['close_t0']
-        merged['ret_t3'] = (merged['close_t3'] - merged['close_t0']) / merged['close_t0']
-        merged['ret_t5'] = (merged['close_t5'] - merged['close_t0']) / merged['close_t0']
-        merged['ret_t10'] = (merged['close_t10'] - merged['close_t0']) / merged['close_t0']
-        
-        # Aggregate daily portfolio return (average of top 5)
-        daily_returns = merged.groupby('date').agg({
-            'ret_t1': 'mean',
-            'ret_t3': 'mean',
-            'ret_t5': 'mean',
-            'ret_t10': 'mean'
-        }).reset_index()
-        
-        # Keep only the requested days_back dates
-        daily_returns = daily_returns.sort_values('date', ascending=False).head(days_back).sort_values('date', ascending=True)
-        
-        # Calculate Metrics
-        results = {}
-        for horizon, col in zip(['T+1', 'T+3', 'T+5', 'T+10'], ['ret_t1', 'ret_t3', 'ret_t5', 'ret_t10']):
-            ret_series = daily_returns[col].dropna()
-            if len(ret_series) == 0:
-                results[horizon] = {"win_rate": 0, "total_return": 0, "max_drawdown": 0}
-                continue
-                
-            win_rate = (ret_series > 0).mean() * 100
-            compounded_return = ((1 + ret_series).prod() - 1) * 100
-            cum_ret = (1 + ret_series).cumprod()
-            drawdown = (cum_ret / cum_ret.cummax() - 1).min() * 100
-            
-            results[horizon] = {
-                "win_rate": round(win_rate, 2),
-                "total_return": round(compounded_return, 2),
-                "max_drawdown": round(drawdown, 2)
+        prices_lookup = {}
+        for row in prices_df.itertuples():
+            if row.ticker not in prices_lookup:
+                prices_lookup[row.ticker] = {}
+            prices_lookup[row.ticker][row.date_str] = {
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close)
             }
             
+        # Run ML predictions for test dates
+        df_test = df[df['date'].isin(test_dates)].copy()
+        df_test = df_test.dropna(subset=features_list)
+        
+        if strategy == 'OVERSOLD_top5':
+            # Oversold model is specialized on RSI14 <= 35
+            df_test = df_test[df_test['rsi_14'] <= 35].copy()
+            
+        if df_test.empty:
+            return {"error": "No data matching strategy conditions in backtest period."}
+            
+        X = df_test[features_list].values
+        df_test['prob_up'] = model.predict_proba(X)[:, 1]
+        df_test['date_str'] = df_test['date'].dt.strftime('%Y-%m-%d')
+        
+        # Group candidates by date
+        candidates_by_date = {}
+        for date_str, group in df_test.groupby('date_str'):
+            # Rank candidates
+            sorted_group = group.sort_values(by='prob_up', ascending=False)
+            candidates_by_date[date_str] = [
+                {"ticker": r.ticker, "prob_up": float(r.prob_up), "close": float(r.close)}
+                for r in sorted_group.itertuples()
+            ]
+            
+        # Initialize portfolio state
+        cash = initial_capital
+        portfolio_value = initial_capital
+        equity_curve = []
+        trades_log = []
+        active_trades = []  # list of open positions
+        
+        MAX_POSITIONS = 5
+        
+        for today_str in cron_dates:
+            # 1. Update Open Positions & Check Exits (SL, TP, holding period)
+            still_active = []
+            for t in active_trades:
+                t["days_held"] += 1
+                ticker = t["ticker"]
+                shares = t["shares"]
+                buy_price = t["entry_price"]
+                
+                # Check price on this trading day
+                today_prices = prices_lookup.get(ticker, {}).get(today_str)
+                if not today_prices:
+                    # Stock suspended or data missing, keep holding
+                    still_active.append(t)
+                    continue
+                    
+                low_p = today_prices["low"]
+                high_p = today_prices["high"]
+                close_p = today_prices["close"]
+                open_p = today_prices["open"]
+                
+                sl_price = t["sl_price"]
+                tp_price = t["tp_price"]
+                
+                # Check Stop Loss (SL)
+                if stop_loss_pct > 0 and low_p <= sl_price:
+                    # Exited due to SL (assume exit at sl_price or open price if gap down)
+                    exit_price = min(sl_price, open_p)
+                    exit_value = shares * exit_price
+                    cash += exit_value
+                    trades_log.append({
+                        "ticker": ticker,
+                        "entry_date": t["entry_date"],
+                        "exit_date": today_str,
+                        "entry_price": round(buy_price, 2),
+                        "exit_price": round(exit_price, 2),
+                        "return_pct": round((exit_price / buy_price - 1) * 100, 2),
+                        "status": "SL",
+                        "days_held": t["days_held"]
+                    })
+                # Check Take Profit (TP)
+                elif take_profit_pct > 0 and high_p >= tp_price:
+                    # Exited due to TP (assume exit at tp_price or open price if gap up)
+                    exit_price = max(tp_price, open_p)
+                    exit_value = shares * exit_price
+                    cash += exit_value
+                    trades_log.append({
+                        "ticker": ticker,
+                        "entry_date": t["entry_date"],
+                        "exit_date": today_str,
+                        "entry_price": round(buy_price, 2),
+                        "exit_price": round(exit_price, 2),
+                        "return_pct": round((exit_price / buy_price - 1) * 100, 2),
+                        "status": "TP",
+                        "days_held": t["days_held"]
+                    })
+                # Check Holding Period Expiry
+                elif t["days_held"] >= holding_days:
+                    # Exited due to holding period expired (exit at close price)
+                    exit_value = shares * close_p
+                    cash += exit_value
+                    trades_log.append({
+                        "ticker": ticker,
+                        "entry_date": t["entry_date"],
+                        "exit_date": today_str,
+                        "entry_price": round(buy_price, 2),
+                        "exit_price": round(close_p, 2),
+                        "return_pct": round((close_p / buy_price - 1) * 100, 2),
+                        "status": "EXPIRED",
+                        "days_held": t["days_held"]
+                    })
+                else:
+                    # Keep holding
+                    still_active.append(t)
+                    
+            active_trades = still_active
+            
+            # Calculate current valuation of open positions
+            holdings_value = 0.0
+            for t in active_trades:
+                ticker = t["ticker"]
+                today_prices = prices_lookup.get(ticker, {}).get(today_str)
+                current_price = today_prices["close"] if today_prices else t["entry_price"]
+                holdings_value += t["shares"] * current_price
+                
+            portfolio_value = cash + holdings_value
+            equity_curve.append({"time": today_str, "value": round(portfolio_value, 2)})
+            
+            # 2. Enter New Trades
+            slots_available = MAX_POSITIONS - len(active_trades)
+            if slots_available > 0 and today_str in candidates_by_date:
+                candidates = candidates_by_date[today_str]
+                
+                # Exclude tickers we already hold
+                held_tickers = set(t["ticker"] for t in active_trades)
+                candidates = [c for c in candidates if c["ticker"] not in held_tickers]
+                
+                # Pick top candidates
+                to_buy = candidates[:slots_available]
+                if to_buy:
+                    # Equal weight capital allocation per position based on portfolio valuation
+                    # Max allocation per trade: 20% of portfolio value
+                    buy_power_per_slot = portfolio_value / MAX_POSITIONS
+                    
+                    # Ensure we have enough cash (otherwise buy with remaining cash equally)
+                    total_needed = buy_power_per_slot * len(to_buy)
+                    if total_needed > cash:
+                        buy_power_per_slot = cash / len(to_buy)
+                        
+                    for c in to_buy:
+                        ticker = c["ticker"]
+                        buy_price = c["close"]
+                        
+                        if buy_price <= 0:
+                            continue
+                            
+                        shares = buy_power_per_slot / buy_price
+                        cash -= buy_power_per_slot
+                        
+                        sl_price = buy_price * (1 - stop_loss_pct / 100) if stop_loss_pct > 0 else 0.0
+                        tp_price = buy_price * (1 + take_profit_pct / 100) if take_profit_pct > 0 else float('inf')
+                        
+                        active_trades.append({
+                            "ticker": ticker,
+                            "entry_date": today_str,
+                            "entry_price": buy_price,
+                            "shares": shares,
+                            "days_held": 0,
+                            "sl_price": sl_price,
+                            "tp_price": tp_price
+                        })
+                        
+        # Close any remaining open positions at final close prices to complete statistics
+        final_date = cron_dates[-1]
+        for t in active_trades:
+            ticker = t["ticker"]
+            today_prices = prices_lookup.get(ticker, {}).get(final_date)
+            exit_price = today_prices["close"] if today_prices else t["entry_price"]
+            
+            trades_log.append({
+                "ticker": ticker,
+                "entry_date": t["entry_date"],
+                "exit_date": final_date,
+                "entry_price": round(t["entry_price"], 2),
+                "exit_price": round(exit_price, 2),
+                "return_pct": round((exit_price / t["entry_price"] - 1) * 100, 2),
+                "status": "OPEN",
+                "days_held": t["days_held"]
+            })
+            
+        # Calculate summary metrics
+        total_trades = len(trades_log)
+        wins = sum(1 for t in trades_log if t["return_pct"] > 0)
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+        
+        compounded_return = (portfolio_value / initial_capital - 1) * 100
+        
+        # Calculate Max Drawdown
+        values = [pt["value"] for pt in equity_curve]
+        peak = values[0]
+        max_dd = 0.0
+        for val in values:
+            if val > peak:
+                peak = val
+            dd = (val / peak - 1) * 100
+            if dd < max_dd:
+                max_dd = dd
+                
+        # Calculate Sharpe Ratio
+        daily_pct_changes = []
+        for t in range(1, len(values)):
+            daily_pct_changes.append(values[t] / values[t-1] - 1)
+            
+        sharpe = 0.0
+        if len(daily_pct_changes) > 1:
+            mean_ret = np.mean(daily_pct_changes)
+            std_ret = np.std(daily_pct_changes)
+            if std_ret > 0:
+                # Annualized (assuming 252 trading days/year, risk-free rate = 0)
+                sharpe = (mean_ret / std_ret) * np.sqrt(252)
+                
+        # Fetch IHSG index benchmark curve
+        benchmark_curve = get_benchmark_curve(start_date_str, end_date_str, initial_capital, cron_dates)
+        
         return {
+            "strategy": strategy,
             "days_back": days_back,
-            "metrics": results
+            "initial_capital": initial_capital,
+            "final_value": round(portfolio_value, 2),
+            "total_return_pct": round(compounded_return, 2),
+            "win_rate": round(win_rate, 2),
+            "max_drawdown_pct": round(max_dd, 2),
+            "sharpe_ratio": round(sharpe, 2),
+            "total_trades": total_trades,
+            "equity_curve": equity_curve,
+            "benchmark_curve": benchmark_curve,
+            "trades": trades_log
         }
+        
     except Exception as e:
-        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}
 
 if __name__ == "__main__":
-    res = run_backtest(100)
-    print(res)
+    res = run_backtest(days_back=50, strategy='OVERSOLD_top5', stop_loss_pct=3, take_profit_pct=6)
+    print(f"Profit: {res.get('total_return_pct')}%")
+    print(f"Trades count: {res.get('total_trades')}")
