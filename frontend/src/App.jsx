@@ -8,6 +8,7 @@ function App() {
   const [maxPriceFilter, setMaxPriceFilter] = useState("")
   const [showOnlyFca, setShowOnlyFca] = useState(false)
   const [hideFca, setHideFca] = useState(false)
+  const [screenerSearch, setScreenerSearch] = useState("")
   const [status, setStatus] = useState({ message: "Idle", progress: 0, is_running: false })
   const [selectedTicker, setSelectedTicker] = useState(null)
   const [backtestData, setBacktestData] = useState(null)
@@ -859,6 +860,26 @@ function App() {
               border: '1px solid rgba(255,255,255,0.05)',
               flexWrap: 'wrap'
             }}>
+              {/* Search Ticker Filter */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.85rem', color: '#ccc', fontWeight: '500' }}>Cari Ticker:</span>
+                <input 
+                  type="text"
+                  placeholder="Contoh: BBCA"
+                  value={screenerSearch}
+                  onChange={(e) => setScreenerSearch(e.target.value.toUpperCase())}
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '4px',
+                    padding: '0.35rem 0.6rem',
+                    color: '#fff',
+                    width: '120px',
+                    fontSize: '0.85rem'
+                  }}
+                />
+              </div>
+
               {/* Max Price Filter */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: '0.85rem', color: '#ccc', fontWeight: '500' }}>Max Harga (Rp):</span>
@@ -974,7 +995,7 @@ function App() {
               </div>
 
               {/* Reset Button */}
-              {(maxPriceFilter || showOnlyFca || hideFca) && (
+              {(maxPriceFilter || showOnlyFca || hideFca || screenerSearch) && (
                 <button
                   style={{
                     marginLeft: 'auto',
@@ -991,6 +1012,7 @@ function App() {
                     setMaxPriceFilter("");
                     setShowOnlyFca(false);
                     setHideFca(false);
+                    setScreenerSearch("");
                   }}
                 >
                   Reset Filter
@@ -1050,8 +1072,8 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filtered
-                        .sort((a, b) => {
+                      {(() => {
+                        const sorted = filtered.sort((a, b) => {
                           if (predictionHorizon === 'T+3') {
                             const valA = parseFloat(a.prob_up_t3_raw) || 0;
                             const valB = parseFloat(b.prob_up_t3_raw) || 0;
@@ -1061,16 +1083,23 @@ function App() {
                             const valB = parseFloat(b.prob_up_raw) || parseFloat(b.prob_up) || 0;
                             return valB - valA;
                           }
-                        })
-                        .slice(0, 10)
-                        .map((row, index) => (
-                          <tr 
-                            key={index} 
-                            className={selectedTicker === row.ticker ? 'active-row' : ''}
-                            onClick={() => setSelectedTicker(row.ticker)}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <td className="rank-col">#{index + 1}</td>
+                        });
+                        
+                        const rankedItems = sorted.map((row, idx) => ({ ...row, sortedRank: idx + 1 }));
+                        
+                        const displayed = screenerSearch.trim() !== "" 
+                          ? rankedItems.filter(item => item.ticker.toUpperCase().includes(screenerSearch.trim().toUpperCase()))
+                          : rankedItems.slice(0, 10);
+                          
+                        return displayed;
+                      })().map((row, index) => (
+                        <tr 
+                          key={index} 
+                          className={selectedTicker === row.ticker ? 'active-row' : ''}
+                          onClick={() => setSelectedTicker(row.ticker)}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <td className="rank-col">#{row.sortedRank}</td>
                             <td className="ticker-col">
                               {row.ticker}
                               {parseFloat(row.close) <= 50 && (
