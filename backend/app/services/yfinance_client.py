@@ -35,9 +35,23 @@ class YFinanceClient:
                 
             url = f"https://query2.finance.yahoo.com/v8/finance/chart/{yf_ticker}?period1={period1}&period2={period2}&interval=1d"
             
-            response = self.session.get(url, timeout=10)
-            if response.status_code != 200:
-                print(f"Error fetching real data for {ticker}: HTTP {response.status_code}")
+            import time
+            max_retries = 3
+            response = None
+            for attempt in range(max_retries):
+                try:
+                    response = self.session.get(url, timeout=10)
+                    if response.status_code == 200:
+                        break
+                    else:
+                        print(f"Error fetching real data for {ticker}: HTTP {response.status_code} (Attempt {attempt+1}/{max_retries})")
+                except (requests.exceptions.RequestException, requests.exceptions.Timeout) as te:
+                    print(f"Timeout/Connection error fetching data for {ticker}: {te} (Attempt {attempt+1}/{max_retries})")
+                    if attempt == max_retries - 1:
+                        raise te
+                    time.sleep(1.0)
+            
+            if response is None or response.status_code != 200:
                 return pd.DataFrame()
                 
             data = response.json()
