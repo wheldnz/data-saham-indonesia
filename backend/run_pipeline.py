@@ -18,7 +18,29 @@ def update_status(message, progress, is_running=True):
             "is_running": is_running
         }, f)
 
+def prevent_sleep():
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            # ES_CONTINUOUS = 0x80000000
+            # ES_SYSTEM_REQUIRED = 0x00000001
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+            print("[System] Windows Sleep prevention activated for pipeline.")
+        except Exception as e:
+            print(f"[System] Failed to activate sleep prevention: {e}")
+
+def restore_sleep():
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            # ES_CONTINUOUS
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+            print("[System] Windows Sleep prevention deactivated.")
+        except Exception as e:
+            print(f"[System] Failed to deactivate sleep prevention: {e}")
+
 def run_pipeline():
+    prevent_sleep()
     try:
         # Determine the python executable (prefer venv python if exists)
         python_exe = sys.executable
@@ -124,6 +146,8 @@ def run_pipeline():
         update_status(f"Pipeline error: {str(e)}", 0, False)
         print(f"Pipeline error: {e}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        restore_sleep()
 
 if __name__ == "__main__":
     run_pipeline()

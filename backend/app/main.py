@@ -120,6 +120,19 @@ def trigger_pipeline_background():
 
 def scheduler_worker():
     print("[Scheduler] Background scheduler worker thread started.")
+    
+    # Sleep prevention for server daemon thread
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            # ES_CONTINUOUS = 0x80000000
+            # ES_SYSTEM_REQUIRED = 0x00000001
+            # Keeps the system awake while the backend process runs.
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
+            print("[Scheduler] Windows Sleep prevention activated for FastAPI Server.")
+        except Exception as es:
+            print(f"[Scheduler] Failed to activate sleep prevention: {es}")
+            
     last_trigger_date = ""
     
     while True:
@@ -132,7 +145,7 @@ def scheduler_worker():
                     today_str = now.strftime("%Y-%m-%d")
                     time_str = now.strftime("%H:%M")
                     
-                    if time_str in ["12:30", "17:45"]:
+                    if time_str in ["12:30", "18:30"]:
                         trigger_key = f"{today_str}_{time_str}"
                         if last_trigger_date != trigger_key:
                             # Verify if pipeline is already running first
@@ -357,7 +370,7 @@ def trigger_update(background_tasks: BackgroundTasks):
 @app.get("/api/scheduler")
 def get_scheduler_status():
     cfg = load_scheduler_config()
-    return {"enabled": cfg.get("enabled", True), "next_runs": ["12:30 WIB", "17:45 WIB"]}
+    return {"enabled": cfg.get("enabled", True), "next_runs": ["12:30 WIB", "18:30 WIB"]}
 
 @app.post("/api/scheduler/toggle")
 def toggle_scheduler():

@@ -845,7 +845,7 @@ function App() {
               width: '100%'
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#94a3b8' }}>Jadwal Otomatis (12:30 & 17:45)</span>
+                <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#94a3b8' }}>Jadwal Otomatis (12:30 & 18:30)</span>
                 <label style={{ position: 'relative', display: 'inline-block', width: '38px', height: '20px', cursor: 'pointer' }}>
                   <input 
                     type="checkbox" 
