@@ -2867,51 +2867,6 @@ function App() {
         </div>
       )}
 
-      {/* Backtest Panel */}
-      {activeTab !== 'learning' && (
-        <div className="glass-panel backtest-panel" style={{ marginTop: '2rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <h2>Strategy Backtester (100 Days)</h2>
-            <button 
-              className={`btn-update ${isBacktesting ? 'running' : ''}`}
-              onClick={handleRunBacktest}
-              disabled={isBacktesting}
-              style={{ width: 'auto', padding: '0.8rem 1.5rem', marginTop: 0 }}
-            >
-              {isBacktesting ? 'Simulating...' : 'RUN BACKTEST'}
-            </button>
-          </div>
-          
-          {!backtestData ? (
-            <p className="no-data">Run backtest to simulate historical trading performance.</p>
-          ) : (
-            <div className="table-responsive">
-              <table className="pred-table">
-                <thead>
-                  <tr>
-                    <th>Holding Period</th>
-                    <th>Win Rate</th>
-                    <th>Total Return</th>
-                    <th>Max Drawdown</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {['T+1', 'T+3', 'T+5', 'T+10'].map(horizon => (
-                    <tr key={horizon}>
-                      <td style={{ fontWeight: 'bold', color: 'var(--primary-glow)' }}>{horizon}</td>
-                      <td>{backtestData.metrics[horizon]?.win_rate}%</td>
-                      <td style={{ color: backtestData.metrics[horizon]?.total_return > 0 ? '#00d2ff' : '#ff2a2a' }}>
-                        {backtestData.metrics[horizon]?.total_return}%
-                      </td>
-                      <td style={{ color: '#ff2a2a' }}>{backtestData.metrics[horizon]?.max_drawdown}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Trade Modal */}
       {showTradeModal && (
