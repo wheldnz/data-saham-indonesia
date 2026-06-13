@@ -66,6 +66,42 @@ def fetch_all_idx_tickers() -> list[dict]:
                     if t["ticker"] not in seen:
                         seen.add(t["ticker"])
                         deduped_tickers.append(t)
+                
+                # Append manual additional tickers (like newly listed stocks missing from Wikipedia)
+                additional_tickers = [
+                    {"ticker": "ASPR", "name": "Asia Pramulia Tbk", "sector": "Basic Materials"},
+                    {"ticker": "KSIX", "name": "KSIX Tbk", "sector": "General"},
+                    {"ticker": "RATU", "name": "RATU Tbk", "sector": "General"},
+                    {"ticker": "YOII", "name": "YOII Tbk", "sector": "General"},
+                    {"ticker": "HGII", "name": "HGII Tbk", "sector": "General"},
+                    {"ticker": "BRRC", "name": "BRRC Tbk", "sector": "General"},
+                    {"ticker": "DGWG", "name": "DGWG Tbk", "sector": "General"},
+                    {"ticker": "CBDK", "name": "CBDK Tbk", "sector": "General"},
+                    {"ticker": "OBAT", "name": "OBAT Tbk", "sector": "General"},
+                    {"ticker": "MINE", "name": "MINE Tbk", "sector": "General"},
+                    {"ticker": "KAQI", "name": "KAQI Tbk", "sector": "General"},
+                    {"ticker": "YUPI", "name": "YUPI Tbk", "sector": "General"},
+                    {"ticker": "FORE", "name": "FORE Tbk", "sector": "General"},
+                    {"ticker": "MDLA", "name": "MDLA Tbk", "sector": "General"},
+                    {"ticker": "DKHH", "name": "DKHH Tbk", "sector": "General"},
+                    {"ticker": "PSAT", "name": "PSAT Tbk", "sector": "General"},
+                    {"ticker": "COIN", "name": "COIN Tbk", "sector": "General"},
+                    {"ticker": "CDIA", "name": "CDIA Tbk", "sector": "General"},
+                    {"ticker": "PMUI", "name": "PMUI Tbk", "sector": "General"},
+                    {"ticker": "BLOG", "name": "BLOG Tbk", "sector": "General"},
+                    {"ticker": "MERI", "name": "MERI Tbk", "sector": "General"},
+                    {"ticker": "CHEK", "name": "CHEK Tbk", "sector": "General"},
+                    {"ticker": "EMAS", "name": "EMAS Tbk", "sector": "General"},
+                    {"ticker": "PJHB", "name": "PJHB Tbk", "sector": "General"},
+                    {"ticker": "RLCO", "name": "RLCO Tbk", "sector": "General"},
+                    {"ticker": "SUPA", "name": "SUPA Tbk", "sector": "General"},
+                    {"ticker": "WBSA", "name": "WBSA Tbk", "sector": "General"}
+                ]
+                for add_t in additional_tickers:
+                    if add_t["ticker"] not in seen:
+                        seen.add(add_t["ticker"])
+                        deduped_tickers.append(add_t)
+                        
                 deduped_tickers.sort(key=lambda x: x["ticker"])
                 print(f"Unique tickers from Wikipedia: {len(deduped_tickers)}")
                 return deduped_tickers
@@ -139,6 +175,7 @@ def update_pipeline_status(message, progress, is_running=True):
 
 def ingest_daily_data(db, tickers: list[str]):
     from sqlalchemy import func
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     
     print("Checking database for existing market data dates...")
     update_pipeline_status("Checking database for existing market data...", 5)
@@ -148,101 +185,116 @@ def ingest_daily_data(db, tickers: list[str]):
     max_dates = {ticker: max_date for ticker, max_date in max_dates_query}
     
     # fallback_start digunakan untuk saham yang belum punya data di DB.
-    # 5 tahun dipilih agar mencakup siklus pasar penuh:
-    #   2020: COVID crash (dominan class 0 / turun)
-    #   2021: Post-COVID bull run (dominan class 1 / naik)
-    #   2022: Rate hike global (koreksi bearish)
-    #   2023-2024: Recovery & sideways
-    # Siklus yang beragam = distribusi target lebih seimbang ~50/50
+    # 5 tahun dipilih agar mencakup siklus pasar penuh
     fallback_start = (datetime.now() - timedelta(days=5 * 365)).date()
     today_str = datetime.now().strftime('%Y-%m-%d')
     
-    print(f"\n--- Ingesting Incremental Data up to {today_str} for {len(tickers)} stocks ---")
-    
-    for idx, ticker in enumerate(tickers):
+    def fetch_ticker_data(ticker):
         latest_date = max_dates.get(ticker)
-        
-        # Calculate dynamic start_date
         if latest_date:
             # Fetch from 7 days before to prevent missing candles from weekend/timezone offsets
             start_date = (latest_date - timedelta(days=7)).strftime('%Y-%m-%d')
         else:
             start_date = fallback_start.strftime('%Y-%m-%d')
-            
-        progress_pct = int(5 + (idx / len(tickers)) * 55)
-        
-        if idx % 10 == 0 or idx == len(tickers) - 1:
-            print(f"Processed {idx}/{len(tickers)} stocks. Current: {ticker}...")
-            update_pipeline_status(f"Ingesting {ticker} ({idx}/{len(tickers)})...", progress_pct)
-            
         df = yfinance_client.fetch_historical_data(ticker, start_date=start_date, end_date=today_str)
+        return ticker, df, latest_date
+
+    print(f"\n--- Ingesting Incremental Data up to {today_str} for {len(tickers)} stocks using ThreadPool ---")
+    
+    processed_count = 0
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(fetch_ticker_data, ticker): ticker for ticker in tickers}
         
-        # Determine active status dynamically
-        is_active = True
-        latest_trade_date = None
-        
-        if df.empty:
-            if latest_date:
-                days_since_last_db_trade = (datetime.now().date() - latest_date).days
-                if days_since_last_db_trade > 30:
-                    is_active = False
-                    latest_trade_date = latest_date
-            else:
-                is_active = False
-        else:
-            latest_trade_date = df['Date'].max()
-            days_since_last_trade = (datetime.now().date() - latest_trade_date).days
-            if days_since_last_trade > 30:
-                is_active = False
+        for future in as_completed(futures):
+            ticker = futures[future]
+            processed_count += 1
+            try:
+                ticker, df, latest_date = future.result()
                 
-        # Update stock active status in the database
-        stock_record = db.query(Stock).filter(Stock.ticker == ticker).first()
-        if stock_record:
-            if stock_record.is_active != is_active:
-                stock_record.is_active = is_active
-                status_str = "Active" if is_active else "Inactive/Suspended"
-                last_date_str = str(latest_trade_date) if latest_trade_date else "Never"
-                print(f"Updated status of {ticker} to {status_str} (Last trade: {last_date_str})")
+                # Determine active status dynamically
+                is_active = True
+                latest_trade_date = None
                 
-        if df.empty:
-            db.commit()
-            continue
-            
-        # Optimize DB queries: If we have a latest_date, query only dates >= start_date to check for duplicates in memory
-        if latest_date:
-            existing_records = db.query(DailyOHLCV.date).filter(
-                DailyOHLCV.ticker == ticker,
-                DailyOHLCV.date >= latest_date - timedelta(days=8)
-            ).all()
-            existing_dates = set(row[0] for row in existing_records if row[0] is not None)
-        else:
-            existing_dates = set()
-            
-        records_added = 0
-        for _, row in df.iterrows():
-            record_date = row['Date']
-            # If the record_date is not in our set of existing dates, insert it
-            if record_date not in existing_dates:
-                ohlcv = DailyOHLCV(
-                    ticker=ticker,
-                    date=record_date,
-                    open=row['Open'],
-                    high=row['High'],
-                    low=row['Low'],
-                    close=row['Close'],
-                    adj_close=row.get('Adj Close', row['Close']),
-                    volume=row['Volume'],
-                    value=row['Close'] * row['Volume'],
-                    frequency=0,
-                    foreign_buy=0,
-                    foreign_sell=0
-                )
-                db.add(ohlcv)
-                records_added += 1
+                if df.empty:
+                    if latest_date:
+                        days_since_last_db_trade = (datetime.now().date() - latest_date).days
+                        if days_since_last_db_trade > 30:
+                            is_active = False
+                            latest_trade_date = latest_date
+                    else:
+                        is_active = False
+                else:
+                    latest_trade_date = df['Date'].max()
+                    days_since_last_trade = (datetime.now().date() - latest_trade_date).days
+                    if days_since_last_trade > 30:
+                        is_active = False
+                        
+                # Update stock active status in the database
+                stock_record = db.query(Stock).filter(Stock.ticker == ticker).first()
+                if stock_record:
+                    if stock_record.is_active != is_active:
+                        stock_record.is_active = is_active
+                        status_str = "Active" if is_active else "Inactive/Suspended"
+                        last_date_str = str(latest_trade_date) if latest_trade_date else "Never"
+                        print(f"Updated status of {ticker} to {status_str} (Last trade: {last_date_str})")
+                        
+                if df.empty:
+                    db.commit()
+                    continue
+                    
+                # Query existing records in the overlap window as objects
+                overlap_records = {}
+                if latest_date:
+                    records = db.query(DailyOHLCV).filter(
+                        DailyOHLCV.ticker == ticker,
+                        DailyOHLCV.date >= latest_date - timedelta(days=8)
+                    ).all()
+                    overlap_records = {r.date: r for r in records}
+                    
+                records_added = 0
+                records_updated = 0
+                for _, row in df.iterrows():
+                    record_date = row['Date']
+                    # If the date exists, update it (e.g. EOD update after Sesi 1)
+                    if record_date in overlap_records:
+                        ohlcv = overlap_records[record_date]
+                        ohlcv.open = row['Open']
+                        ohlcv.high = row['High']
+                        ohlcv.low = row['Low']
+                        ohlcv.close = row['Close']
+                        ohlcv.adj_close = row.get('Adj Close', row['Close'])
+                        ohlcv.volume = row['Volume']
+                        ohlcv.value = row['Close'] * row['Volume']
+                        records_updated += 1
+                    else:
+                        ohlcv = DailyOHLCV(
+                            ticker=ticker,
+                            date=record_date,
+                            open=row['Open'],
+                            high=row['High'],
+                            low=row['Low'],
+                            close=row['Close'],
+                            adj_close=row.get('Adj Close', row['Close']),
+                            volume=row['Volume'],
+                            value=row['Close'] * row['Volume'],
+                            frequency=0,
+                            foreign_buy=0,
+                            foreign_sell=0
+                        )
+                        db.add(ohlcv)
+                        records_added += 1
+                        
+                db.commit()
                 
-        db.commit()
-        # Sleep for a tiny duration (50ms) to maintain politeness without stalling the pipeline
-        time.sleep(0.05)
+                # Update progress info
+                if processed_count % 50 == 0 or processed_count == len(tickers):
+                    progress_pct = int(5 + (processed_count / len(tickers)) * 55)
+                    print(f"Processed {processed_count}/{len(tickers)} stocks. Current: {ticker}...")
+                    update_pipeline_status(f"Ingested {ticker} ({processed_count}/{len(tickers)})...", progress_pct)
+                    
+            except Exception as e_proc:
+                print(f"Error processing ticker {ticker}: {e_proc}")
+                db.rollback()
 
 if __name__ == "__main__":
     db = SessionLocal()

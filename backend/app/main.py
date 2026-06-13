@@ -109,6 +109,22 @@ def save_scheduler_config(config):
     except Exception as e:
         print(f"Error saving scheduler config: {e}")
 
+def save_pipeline_pid(pid: int):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        pid_path = os.path.join(DATA_DIR, 'pipeline.pid')
+        with open(pid_path, 'w') as f:
+            f.write(str(pid))
+    except Exception as e:
+        print(f"Error saving pipeline PID: {e}")
+
+def is_process_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
 def trigger_pipeline_background():
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'run_pipeline.py')
     python_exe = sys.executable
@@ -116,7 +132,11 @@ def trigger_pipeline_background():
     if os.path.exists(venv_python):
         python_exe = venv_python
     print(f"[Scheduler] Triggering pipeline via: {python_exe} {script_path}")
-    subprocess.Popen([python_exe, script_path])
+    try:
+        proc = subprocess.Popen([python_exe, script_path])
+        save_pipeline_pid(proc.pid)
+    except Exception as e:
+        print(f"[Scheduler] Failed to start pipeline: {e}")
 
 def scheduler_worker():
     print("[Scheduler] Background scheduler worker thread started.")
@@ -218,9 +238,9 @@ def get_predictions():
     return {"data": sanitize_json_data(data)}
 
 
-@app.get("/api/predictions/oversold")
-def get_oversold_predictions():
-    csv_path = os.path.join(DATA_DIR, 'oversold_ranking.csv')
+@app.get("/api/predictions/tech")
+def get_technical_predictions():
+    csv_path = os.path.join(DATA_DIR, 'daily_ranking_tech.csv')
     if not os.path.exists(csv_path):
         return {"data": []}
     
@@ -253,11 +273,12 @@ def get_oversold_predictions():
                     record["bandarologi_status"] = acum_status
                     record["bandarologi_score"] = acum_score
         except Exception as e:
-            print("Error injecting bandarologi in oversold predictions:", e)
+            print("Error injecting bandarologi in technical predictions:", e)
         finally:
             conn.close()
             
     return {"data": sanitize_json_data(data)}
+
 
 
 @app.get("/api/bandarologi/{ticker}")
@@ -335,8 +356,38 @@ def get_update_status():
     if not os.path.exists(status_path):
         return {"message": "Idle", "progress": 0, "is_running": False}
         
-    with open(status_path, 'r') as f:
-        return json.load(f)
+    try:
+        with open(status_path, 'r') as f:
+            status = json.load(f)
+    except Exception:
+        return {"message": "Idle", "progress": 0, "is_running": False}
+        
+    # Self-healing logic: Check if the process is actually running
+    if status.get("is_running", False):
+        pid_path = os.path.join(DATA_DIR, 'pipeline.pid')
+        if os.path.exists(pid_path):
+            try:
+                with open(pid_path, 'r') as f:
+                    pid = int(f.read().strip())
+                if not is_process_running(pid):
+                    # Process died or was terminated, reset status
+                    status["is_running"] = False
+                    status["message"] = "Pipeline completed or stopped"
+                    with open(status_path, 'w') as f:
+                        json.dump(status, f)
+            except Exception:
+                pass
+        else:
+            # No PID file exists, but it says running. Reset to be safe.
+            status["is_running"] = False
+            status["message"] = "Idle"
+            try:
+                with open(status_path, 'w') as f:
+                    json.dump(status, f)
+            except Exception:
+                pass
+                
+    return status
 
 @app.post("/api/trigger-update")
 def trigger_update(background_tasks: BackgroundTasks):
@@ -355,7 +406,11 @@ def trigger_update(background_tasks: BackgroundTasks):
         
     # Run pipeline in background using subprocess
     def run_script():
-        subprocess.Popen([python_exe, script_path])
+        try:
+            proc = subprocess.Popen([python_exe, script_path])
+            save_pipeline_pid(proc.pid)
+        except Exception as e:
+            print(f"Failed to start pipeline: {e}")
         
     background_tasks.add_task(run_script)
     

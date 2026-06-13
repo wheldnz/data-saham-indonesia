@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 MODEL_T1_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
 MODEL_T3_PATH = os.path.join(DATA_DIR, 'xgb_model_t3.joblib')
-MODEL_OVERSOLD_PATH = os.path.join(DATA_DIR, 'xgb_model_oversold.joblib')
 FEATURES_LIST_PATH = os.path.join(DATA_DIR, 'features_list.joblib')
 
 def get_benchmark_curve(start_date_str, end_date_str, initial_capital, cron_dates):
@@ -62,14 +61,11 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
     Supports SL/TP, custom capital, and different model strategies.
     """
     # Load model configuration
-    if strategy == 'T1_top5':
+    if strategy == 'T1_top5' or strategy == 'T1_blended_top5':
         model_path = MODEL_T1_PATH
         holding_days = 1
     elif strategy == 'T3_top5':
         model_path = MODEL_T3_PATH
-        holding_days = 3
-    elif strategy == 'OVERSOLD_top5':
-        model_path = MODEL_OVERSOLD_PATH
         holding_days = 3
     else:
         return {"error": f"Unknown strategy: {strategy}"}
@@ -125,16 +121,50 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
         df_test = df[df['date'].isin(test_dates)].copy()
         df_test = df_test.dropna(subset=features_list)
         
-        if strategy == 'OVERSOLD_top5':
-            # Oversold model is specialized on RSI14 <= 35
-            df_test = df_test[df_test['rsi_14'] <= 35].copy()
+        # No oversold filter needed anymore
             
         if df_test.empty:
             return {"error": "No data matching strategy conditions in backtest period."}
             
-        X = df_test[features_list].values
-        df_test['prob_up'] = model.predict_proba(X)[:, 1]
         df_test['date_str'] = df_test['date'].dt.strftime('%Y-%m-%d')
+        
+        # Load Bandarologi data for blending or filtering
+        if strategy == 'T1_blended_top5':
+            try:
+                import sqlite3
+                db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
+                conn = sqlite3.connect(db_path, timeout=30)
+                test_dates_str = [d.strftime('%Y-%m-%d') for d in test_dates]
+                placeholders = ','.join('?' for _ in test_dates_str)
+                df_broker = pd.read_sql_query(f'''
+                    SELECT ticker, date, acum_score, acum_status 
+                    FROM broker_summaries 
+                    WHERE date IN ({placeholders})
+                ''', conn, params=test_dates_str)
+                conn.close()
+                
+                df_broker['date_str'] = pd.to_datetime(df_broker['date']).dt.strftime('%Y-%m-%d')
+                df_test = pd.merge(df_test, df_broker[['ticker', 'date_str', 'acum_score', 'acum_status']], on=['ticker', 'date_str'], how='left')
+                df_test['acum_score'] = df_test['acum_score'].fillna(50.0)
+                df_test['acum_status'] = df_test['acum_status'].fillna('Neutral')
+            except Exception as e_br:
+                print(f"[Backtest] Error loading broker summaries: {e_br}")
+                df_test['acum_score'] = 50.0
+                df_test['acum_status'] = 'Neutral'
+                
+        # No specialized filters needed
+            
+        if df_test.empty:
+            return {"error": "No data matching strategy conditions after applying filters."}
+            
+        X = df_test[features_list].values
+        probs_tech = model.predict_proba(X)[:, 1]
+        
+        if strategy == 'T1_blended_top5':
+            acum_score_val = df_test['acum_score'].values
+            df_test['prob_up'] = 0.6 * probs_tech + 0.4 * (acum_score_val / 100.0)
+        else:
+            df_test['prob_up'] = probs_tech
         
         # Group candidates by date
         candidates_by_date = {}
@@ -185,6 +215,8 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                     exit_price = min(sl_price, open_p)
                     exit_value = shares * exit_price
                     cash += exit_value
+                    entry_value = shares * buy_price
+                    profit_nominal = exit_value - entry_value
                     trades_log.append({
                         "ticker": ticker,
                         "entry_date": t["entry_date"],
@@ -192,6 +224,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                         "entry_price": round(buy_price, 2),
                         "exit_price": round(exit_price, 2),
                         "return_pct": round((exit_price / buy_price - 1) * 100, 2),
+                        "profit_nominal": round(profit_nominal, 2),
                         "status": "SL",
                         "days_held": t["days_held"]
                     })
@@ -201,6 +234,8 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                     exit_price = max(tp_price, open_p)
                     exit_value = shares * exit_price
                     cash += exit_value
+                    entry_value = shares * buy_price
+                    profit_nominal = exit_value - entry_value
                     trades_log.append({
                         "ticker": ticker,
                         "entry_date": t["entry_date"],
@@ -208,6 +243,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                         "entry_price": round(buy_price, 2),
                         "exit_price": round(exit_price, 2),
                         "return_pct": round((exit_price / buy_price - 1) * 100, 2),
+                        "profit_nominal": round(profit_nominal, 2),
                         "status": "TP",
                         "days_held": t["days_held"]
                     })
@@ -216,6 +252,8 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                     # Exited due to holding period expired (exit at close price)
                     exit_value = shares * close_p
                     cash += exit_value
+                    entry_value = shares * buy_price
+                    profit_nominal = exit_value - entry_value
                     trades_log.append({
                         "ticker": ticker,
                         "entry_date": t["entry_date"],
@@ -223,6 +261,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                         "entry_price": round(buy_price, 2),
                         "exit_price": round(close_p, 2),
                         "return_pct": round((close_p / buy_price - 1) * 100, 2),
+                        "profit_nominal": round(profit_nominal, 2),
                         "status": "EXPIRED",
                         "days_held": t["days_held"]
                     })
@@ -293,6 +332,9 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
             ticker = t["ticker"]
             today_prices = prices_lookup.get(ticker, {}).get(final_date)
             exit_price = today_prices["close"] if today_prices else t["entry_price"]
+            exit_value = t["shares"] * exit_price
+            entry_value = t["shares"] * t["entry_price"]
+            profit_nominal = exit_value - entry_value
             
             trades_log.append({
                 "ticker": ticker,
@@ -301,6 +343,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                 "entry_price": round(t["entry_price"], 2),
                 "exit_price": round(exit_price, 2),
                 "return_pct": round((exit_price / t["entry_price"] - 1) * 100, 2),
+                "profit_nominal": round(profit_nominal, 2),
                 "status": "OPEN",
                 "days_held": t["days_held"]
             })
@@ -360,6 +403,6 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
         return {"error": str(e)}
 
 if __name__ == "__main__":
-    res = run_backtest(days_back=50, strategy='OVERSOLD_top5', stop_loss_pct=3, take_profit_pct=6)
+    res = run_backtest(days_back=50, strategy='T1_blended_top5', stop_loss_pct=3, take_profit_pct=6)
     print(f"Profit: {res.get('total_return_pct')}%")
     print(f"Trades count: {res.get('total_trades')}")

@@ -201,63 +201,6 @@ def train_model():
             json.dump(cv_report, f, indent=2)
         print(f"  CV report saved to {report_save_path}")
 
-    # ─────────────────────────────────────────────────────────────
-    # [Final Step] Train Specialized Oversold Rebound Model
-    # ─────────────────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print(f"  STARTING TRAINING FOR SPECIALIZED OVERSOLD BOUNCE MODEL")
-    print(f"{'='*60}")
-    
-    # Filter dataset for oversold conditions (RSI14 <= 35)
-    # This allows the model to learn specific bounce dynamics (e.g. capitulation volume, MACD divergence)
-    df_oversold = df[df['rsi_14'] <= 35].copy()
-    print(f"Oversold dataset size: {len(df_oversold)} rows (out of {len(df)} total rows)")
-    
-    if len(df_oversold) < 1000:
-        print("Warning: Too few oversold rows to train specialized model. Skipping.")
-    else:
-        X_ov = df_oversold[feature_cols].values
-        y_ov = df_oversold['target_1d_up'].values
-        
-        # Class Imbalance
-        n0_ov = int((y_ov == 0).sum())
-        n1_ov = int((y_ov == 1).sum())
-        scale_pos_weight_ov = n0_ov / n1_ov if n1_ov > 0 else 1.0
-        print(f"Class distribution — 0 (Down): {n0_ov:,} | 1 (Up): {n1_ov:,}")
-        
-        model_params_ov = dict(
-            n_estimators=100,
-            learning_rate=0.05,
-            max_depth=4,
-            subsample=0.75,
-            colsample_bytree=0.75,
-            min_child_weight=5,
-            reg_alpha=0.1,
-            reg_lambda=1.5,
-            scale_pos_weight=scale_pos_weight_ov,
-            random_state=42,
-            eval_metric='logloss'
-        )
-        
-        print("Training specialized Oversold Bounce model on all oversold samples...")
-        model_ov = xgb.XGBClassifier(**model_params_ov)
-        model_ov.fit(X_ov, y_ov, verbose=False)
-        
-        MODEL_OVERSOLD_PATH = os.path.join(DATA_DIR, 'xgb_model_oversold.joblib')
-        joblib.dump(model_ov, MODEL_OVERSOLD_PATH)
-        print(f"Specialized model saved to {MODEL_OVERSOLD_PATH}")
-        
-        # Save simple report
-        CV_REPORT_OVERSOLD_PATH = os.path.join(DATA_DIR, 'cv_report_oversold.json')
-        with open(CV_REPORT_OVERSOLD_PATH, 'w') as f:
-            json.dump({
-                "horizon": "Oversold Bounce",
-                "target_column": "target_1d_up",
-                "method": "Specialized training on RSI14 <= 35",
-                "dataset_rows": int(len(df_oversold)),
-                "n_features": int(len(feature_cols))
-            }, f, indent=2)
-
     print("\nAll training pipelines complete!")
 
 if __name__ == "__main__":

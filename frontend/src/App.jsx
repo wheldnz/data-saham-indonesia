@@ -58,6 +58,9 @@ function App() {
   const [tradeAction, setTradeAction] = useState("BUY")
   const [tradeTicker, setTradeTicker] = useState("")
   const [tradeQty, setTradeQty] = useState(100)
+  const [tradePrice, setTradePrice] = useState(0)
+  const [tradeStrategy, setTradeStrategy] = useState("Breakout")
+  const [tradeEmotion, setTradeEmotion] = useState("Neutral")
   const [tradeNotes, setTradeNotes] = useState("")
   const [tradeError, setTradeError] = useState("")
   const [tradeSuccess, setTradeSuccess] = useState("")
@@ -312,7 +315,10 @@ function App() {
           ticker: tradeTicker,
           action: tradeAction,
           quantity: parseInt(tradeQty),
-          notes: tradeNotes
+          price: parseFloat(tradePrice),
+          notes: tradeNotes,
+          strategy: tradeStrategy,
+          emotion: tradeEmotion
         })
       })
       const data = await res.json()
@@ -333,6 +339,26 @@ function App() {
     } catch (err) {
       setTradeError("Gagal menghubungi server.")
       console.error(err)
+    }
+  }
+  const handleDeleteTransaction = async (txId) => {
+    if (!window.confirm("Apakah Anda yakin ingin menghapus catatan transaksi ini dari jurnal?")) return;
+    try {
+      const res = await fetch(`http://localhost:8000/api/portfolio/transaction/${txId}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (res.status === 200) {
+        fetchPortfolio();
+        if (selectedWatchlistId) {
+          fetchWatchlistScores(selectedWatchlistId);
+        }
+      } else {
+        alert(data.detail || "Gagal menghapus transaksi.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menghubungi server.");
     }
   }
 
@@ -361,9 +387,10 @@ function App() {
 
   const fetchPredictions = async (horizon = predictionHorizon) => {
     try {
-      const endpoint = horizon === 'Oversold'
-        ? 'http://localhost:8000/api/predictions/oversold'
-        : 'http://localhost:8000/api/predictions';
+      let endpoint = 'http://localhost:8000/api/predictions';
+      if (horizon === 'T+1 Tech') {
+        endpoint = 'http://localhost:8000/api/predictions/tech';
+      }
       const res = await fetch(endpoint)
       const data = await res.json()
       setPredictions(data.data || [])
@@ -787,7 +814,7 @@ function App() {
             setSelectedTicker(null);
           }}
         >
-          💼 VIRTUAL PORTFOLIO
+          📓 JURNAL TRADING
         </button>
         <button 
           className={`tab-button ${activeTab === 'learning' ? 'active' : ''}`}
@@ -919,7 +946,26 @@ function App() {
                     fetchPredictions('T+1');
                   }}
                 >
-                  Horizon T+1 (Harian)
+                  T+1 (Teknikal + Bandar)
+                </button>
+                <button 
+                  className={`btn-preset ${predictionHorizon === 'T+1 Tech' ? 'active' : ''}`}
+                  style={{ 
+                    padding: '0.4rem 0.8rem', 
+                    fontSize: '0.8rem', 
+                    borderRadius: '6px', 
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    background: predictionHorizon === 'T+1 Tech' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: '#fff'
+                  }}
+                  onClick={() => {
+                    setPredictionHorizon('T+1 Tech');
+                    fetchPredictions('T+1 Tech');
+                  }}
+                >
+                  T+1 (Murni Teknikal)
                 </button>
                 <button 
                   className={`btn-preset ${predictionHorizon === 'T+3' ? 'active' : ''}`}
@@ -939,25 +985,6 @@ function App() {
                   }}
                 >
                   Horizon T+3 (Swing 3-Hari)
-                </button>
-                <button 
-                  className={`btn-preset ${predictionHorizon === 'Oversold' ? 'active' : ''}`}
-                  style={{ 
-                    padding: '0.4rem 0.8rem', 
-                    fontSize: '0.8rem', 
-                    borderRadius: '6px', 
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                    background: predictionHorizon === 'Oversold' ? 'var(--primary-glow)' : 'rgba(255,255,255,0.05)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    color: '#fff'
-                  }}
-                  onClick={() => {
-                    setPredictionHorizon('Oversold');
-                    fetchPredictions('Oversold');
-                  }}
-                >
-                  Oversold Bounce (Pantulan Jenuh Jual)
                 </button>
               </div>
             </div>
@@ -1177,7 +1204,7 @@ function App() {
                         <th>Rank</th>
                         <th>Ticker</th>
                         <th>Close Price</th>
-                        <th>Probability ({predictionHorizon})</th>
+                        <th>Probability ({predictionHorizon === 'T+1 Tech' ? 'T+1 Teknikal' : predictionHorizon === 'T+1' ? 'T+1 Blended' : predictionHorizon})</th>
                         <th>Patterns</th>
                         <th>Bandarologi</th>
                         <th>Prediction Date</th>
@@ -1257,6 +1284,9 @@ function App() {
                                   setTradeTicker(row.ticker);
                                   setTradeAction("BUY");
                                   setTradeQty(100);
+                                  setTradePrice(row.close || 0);
+                                  setTradeStrategy("Breakout");
+                                  setTradeEmotion("Neutral");
                                   setTradeError("");
                                   setTradeSuccess("");
                                   setShowTradeModal(true);
@@ -1639,6 +1669,9 @@ function App() {
                                         setTradeTicker(item.ticker);
                                         setTradeAction("BUY");
                                         setTradeQty(100);
+                                        setTradePrice(item.price || 0);
+                                        setTradeStrategy("Breakout");
+                                        setTradeEmotion("Neutral");
                                         setTradeError("");
                                         setTradeSuccess("");
                                         setShowTradeModal(true);
@@ -1654,6 +1687,9 @@ function App() {
                                         setTradeTicker(item.ticker);
                                         setTradeAction("SELL");
                                         setTradeQty(100);
+                                        setTradePrice(item.price || 0);
+                                        setTradeStrategy("Breakout");
+                                        setTradeEmotion("Neutral");
                                         setTradeError("");
                                         setTradeSuccess("");
                                         setShowTradeModal(true);
@@ -1913,13 +1949,13 @@ function App() {
             )}
 
             {/* Holdings & Transaction Log */}
-            <div className="learning-top-grid" style={{ gridTemplateColumns: '2fr 1.2fr', gap: '1.5rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               {/* Current Holdings */}
-              <div className="glass-panel" style={{ minHeight: '350px' }}>
-                <h2>Current Holdings</h2>
+              <div className="glass-panel" style={{ minHeight: '250px' }}>
+                <h2>Posisi Terbuka (Open Positions)</h2>
                 {!portfolio || portfolio.holdings.length === 0 ? (
-                  <p className="no-data" style={{ padding: '4rem 0', textAlign: 'center' }}>
-                    No stocks in virtual portfolio. Use Screener or Watchlist tables to BUY virtual shares!
+                  <p className="no-data" style={{ padding: '3rem 0', textAlign: 'center' }}>
+                    Belum ada saham di portofolio virtual Anda. Gunakan tombol Beli di menu Screener atau Watchlist untuk menambahkan transaksi!
                   </p>
                 ) : (
                   <div className="table-responsive">
@@ -1961,6 +1997,9 @@ function App() {
                                     setTradeTicker(item.ticker);
                                     setTradeAction("BUY");
                                     setTradeQty(100);
+                                    setTradePrice(item.current_price || 0);
+                                    setTradeStrategy("Breakout");
+                                    setTradeEmotion("Neutral");
                                     setTradeError("");
                                     setTradeSuccess("");
                                     setShowTradeModal(true);
@@ -1975,6 +2014,9 @@ function App() {
                                     setTradeTicker(item.ticker);
                                     setTradeAction("SELL");
                                     setTradeQty(100);
+                                    setTradePrice(item.current_price || 0);
+                                    setTradeStrategy("Breakout");
+                                    setTradeEmotion("Neutral");
                                     setTradeError("");
                                     setTradeSuccess("");
                                     setShowTradeModal(true);
@@ -1992,31 +2034,63 @@ function App() {
                 )}
               </div>
 
-              {/* Transaction Logs */}
+              {/* Jurnal Transaksi */}
               <div className="glass-panel" style={{ minHeight: '350px' }}>
-                <h2>Transaction Logs</h2>
+                <h2>Jurnal Transaksi (Transaction Journal)</h2>
                 {!portfolio || portfolio.transactions.length === 0 ? (
-                  <p className="no-data" style={{ padding: '4rem 0', textAlign: 'center' }}>No transactions recorded.</p>
+                  <p className="no-data" style={{ padding: '3rem 0', textAlign: 'center' }}>Belum ada catatan transaksi.</p>
                 ) : (
-                  <div className="table-responsive" style={{ maxHeight: '350px', overflowY: 'auto' }}>
+                  <div className="table-responsive">
                     <table className="pred-table" style={{ fontSize: '0.8rem' }}>
                       <thead>
                         <tr>
-                          <th>Time</th>
-                          <th>Order</th>
-                          <th>Price</th>
-                          <th>Qty</th>
+                          <th>Tanggal</th>
+                          <th>Saham / Order</th>
+                          <th>Harga</th>
+                          <th>Jumlah</th>
+                          <th>Total Nilai</th>
+                          <th>Strategi / Setup</th>
+                          <th>Kondisi Emosi</th>
+                          <th>Catatan</th>
+                          <th>Aksi</th>
                         </tr>
                       </thead>
                       <tbody>
                         {portfolio.transactions.map((tx, idx) => (
-                          <tr key={idx}>
-                            <td>{tx.date.substring(5, 16)}</td>
+                          <tr key={tx.id || idx}>
+                            <td>{tx.date.substring(0, 16)}</td>
                             <td style={{ color: tx.action === 'BUY' ? '#00d2ff' : '#ef4444', fontWeight: 'bold' }}>
-                              {tx.action} {tx.ticker}
+                              {tx.action === 'BUY' ? 'BELI' : 'JUAL'} {tx.ticker}
                             </td>
                             <td>Rp {tx.price?.toLocaleString('id-ID')}</td>
                             <td>{tx.quantity?.toLocaleString('id-ID')}</td>
+                            <td>Rp {(tx.price * tx.quantity)?.toLocaleString('id-ID')}</td>
+                            <td>
+                              <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }}>
+                                {tx.strategy || '-'}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="badge" style={{ 
+                                background: tx.emotion === 'Calm' ? 'rgba(16, 185, 129, 0.1)' : tx.emotion === 'FOMO' ? 'rgba(168, 85, 247, 0.1)' : tx.emotion === 'Panic' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(255,255,255,0.05)', 
+                                color: tx.emotion === 'Calm' ? '#10b981' : tx.emotion === 'FOMO' ? '#a855f7' : tx.emotion === 'Panic' ? '#ef4444' : '#fff'
+                              }}>
+                                {tx.emotion || '-'}
+                              </span>
+                            </td>
+                            <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={tx.notes}>
+                              {tx.notes || '-'}
+                            </td>
+                            <td>
+                              <button 
+                                className="btn-icon delete" 
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: '1rem', padding: '0.2rem' }}
+                                title="Hapus dari Jurnal"
+                                onClick={() => handleDeleteTransaction(tx.id)}
+                              >
+                                🗑️
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -2401,9 +2475,9 @@ function App() {
                     outline: 'none'
                   }}
                 >
-                  <option value="T1_top5">Horizon T+1 Daily Momentum (Top 5)</option>
+                  <option value="T1_top5">Horizon T+1 Daily Momentum (Top 5 - Teknikal Saja)</option>
+                  <option value="T1_blended_top5">Horizon T+1 Blended (Top 5 - Teknikal + Bandar)</option>
                   <option value="T3_top5">Horizon T+3 Swing Trend (Top 5)</option>
-                  <option value="OVERSOLD_top5">Oversold Bounce Rebounds (Top 5)</option>
                 </select>
               </div>
 
@@ -2698,7 +2772,12 @@ function App() {
                                   <td>Rp {Number(t.entry_price).toLocaleString('id-ID')}</td>
                                   <td>Rp {Number(t.exit_price).toLocaleString('id-ID')}</td>
                                   <td style={{ color: t.return_pct >= 0 ? '#10b981' : '#ef4444', fontWeight: 'bold' }}>
-                                    {t.return_pct >= 0 ? '+' : ''}{t.return_pct}%
+                                    <div>{t.return_pct >= 0 ? '+' : ''}{t.return_pct}%</div>
+                                    {t.profit_nominal !== undefined && (
+                                      <div style={{ fontSize: '0.75rem', fontWeight: 'normal', opacity: 0.85, marginTop: '2px' }}>
+                                        {t.profit_nominal >= 0 ? '+' : ''}Rp {Math.round(t.profit_nominal).toLocaleString('id-ID')}
+                                      </div>
+                                    )}
                                   </td>
                                   <td>
                                     <span className={`badge ${
@@ -2873,7 +2952,7 @@ function App() {
         <div className="modal-overlay" onClick={() => setShowTradeModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <h3 style={{ fontFamily: 'Outfit', color: '#fff', fontSize: '1.25rem' }}>
-              Virtual Order: {tradeAction} {tradeTicker}
+              Catatan Jurnal: {tradeAction === 'BUY' ? 'Beli' : 'Jual'} {tradeTicker}
             </h3>
             {tradeError && (
               <div style={{ color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)', padding: '0.5rem', borderRadius: '4px', fontSize: '0.8rem', marginTop: '0.8rem' }}>
@@ -2907,24 +2986,71 @@ function App() {
                   </button>
                 </div>
               </div>
-              <div className="form-group">
-                <label className="form-label">Jumlah Lembar Saham (Shares)</label>
-                <input 
-                  type="number" 
-                  className="form-input" 
-                  min="1"
-                  required
-                  placeholder="Jumlah shares..."
-                  value={tradeQty}
-                  onChange={(e) => setTradeQty(parseInt(e.target.value) || 0)}
-                />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                <div className="form-group">
+                  <label className="form-label">Harga per Lembar (Rp)</label>
+                  <input 
+                    type="number" 
+                    className="form-input" 
+                    min="1"
+                    required
+                    placeholder="Harga..."
+                    value={tradePrice}
+                    onChange={(e) => setTradePrice(parseFloat(e.target.value) || 0)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Jumlah Lembar (Shares)</label>
+                  <input 
+                    type="number" 
+                    className="form-input" 
+                    min="1"
+                    required
+                    placeholder="Jumlah..."
+                    value={tradeQty}
+                    onChange={(e) => setTradeQty(parseInt(e.target.value) || 0)}
+                  />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+                <div className="form-group">
+                  <label className="form-label">Strategi / Setup</label>
+                  <select 
+                    className="form-input"
+                    style={{ background: 'var(--bg-card)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)', height: '42px', borderRadius: '6px' }}
+                    value={tradeStrategy}
+                    onChange={(e) => setTradeStrategy(e.target.value)}
+                  >
+                    <option value="Breakout">Breakout</option>
+                    <option value="Bandarologi Accumulation">Bandarologi Accumulation</option>
+                    <option value="Buy on Weakness">Buy on Weakness</option>
+                    <option value="Trend Following">Trend Following</option>
+                    <option value="Scalping">Scalping</option>
+                    <option value="Lainnya">Lainnya</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Kondisi Emosi (Feeling)</label>
+                  <select 
+                    className="form-input"
+                    style={{ background: 'var(--bg-card)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)', height: '42px', borderRadius: '6px' }}
+                    value={tradeEmotion}
+                    onChange={(e) => setTradeEmotion(e.target.value)}
+                  >
+                    <option value="Calm">Calm (Tenang/Disiplin)</option>
+                    <option value="FOMO">FOMO</option>
+                    <option value="Panic">Panic (Panik/Takut)</option>
+                    <option value="Greedy">Greedy (Serakah)</option>
+                    <option value="Neutral">Neutral (Biasa)</option>
+                  </select>
+                </div>
               </div>
               <div className="form-group">
-                <label className="form-label">Catatan Transaksi</label>
+                <label className="form-label">Catatan Jurnal</label>
                 <input 
                   type="text" 
                   className="form-input"
-                  placeholder="e.g. Swing trade breakout"
+                  placeholder="e.g. Swing trade breakout support..."
                   value={tradeNotes}
                   onChange={(e) => setTradeNotes(e.target.value)}
                 />
@@ -2942,7 +3068,7 @@ function App() {
                   className="btn-update"
                   style={{ width: 'auto', padding: '0.6rem 1.5rem', marginTop: 0 }}
                 >
-                  Eksekusi Order
+                  Simpan Jurnal
                 </button>
               </div>
             </form>

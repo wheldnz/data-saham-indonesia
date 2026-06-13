@@ -1,6 +1,7 @@
 import sys
 import os
 import pandas as pd
+import numpy as np
 import joblib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -12,10 +13,8 @@ from pattern_scanner import detect_candlestick_patterns
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 MODEL_T1_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
 MODEL_T3_PATH = os.path.join(DATA_DIR, 'xgb_model_t3.joblib')
-MODEL_OVERSOLD_PATH = os.path.join(DATA_DIR, 'xgb_model_oversold.joblib')
 FEATURES_LIST_PATH = os.path.join(DATA_DIR, 'features_list.joblib')
 OUTPUT_PATH = os.path.join(DATA_DIR, 'daily_ranking.csv')
-OVERSOLD_OUTPUT_PATH = os.path.join(DATA_DIR, 'oversold_ranking.csv')
 
 def update_pipeline_status(message, progress, is_running=True):
     import json
@@ -32,16 +31,15 @@ def update_pipeline_status(message, progress, is_running=True):
         print(f"Error writing status file: {e}")
 
 def predict_tomorrow():
-    if not os.path.exists(MODEL_T1_PATH) or not os.path.exists(MODEL_T3_PATH) or not os.path.exists(MODEL_OVERSOLD_PATH) or not os.path.exists(FEATURES_LIST_PATH):
+    if not os.path.exists(MODEL_T1_PATH) or not os.path.exists(MODEL_T3_PATH) or not os.path.exists(FEATURES_LIST_PATH):
         print("Model files not found. Please run train_model.py first.")
         update_pipeline_status("Model files not found. Run training first.", 0, False)
         return
         
-    print("Loading XGBoost Models (T+1, T+3, and Oversold Bounce)...")
+    print("Loading XGBoost Models (T+1 and T+3)...")
     update_pipeline_status("AI is generating Top 10 Predictions...", 80)
     model_t1 = joblib.load(MODEL_T1_PATH)
     model_t3 = joblib.load(MODEL_T3_PATH)
-    model_ov = joblib.load(MODEL_OVERSOLD_PATH)
     features_list = joblib.load(FEATURES_LIST_PATH)
     
     print("Connecting to database using sqlite3...")
@@ -68,12 +66,29 @@ def predict_tomorrow():
             ) m ON f.ticker = m.ticker AND f.date >= date(m.max_date, '-30 days')
         ''', conn)
         
+        df_broker = pd.read_sql_query('''
+            SELECT b.ticker, b.date, b.net_foreign_value, b.acum_ratio, b.acum_score, b.acum_status
+            FROM broker_summaries b
+            INNER JOIN (
+                SELECT ticker, MAX(date) as max_date FROM broker_summaries GROUP BY ticker
+            ) m ON b.ticker = m.ticker AND b.date >= date(m.max_date, '-30 days')
+        ''', conn)
+        
         if df_ohlcv.empty or df_features.empty:
             print("No data available.")
             return
             
         df_merged = pd.merge(df_ohlcv, df_features, on=['ticker', 'date'], how='inner')
+        
         df_merged['date'] = pd.to_datetime(df_merged['date'])
+        df_broker['date'] = pd.to_datetime(df_broker['date'])
+        df_merged = pd.merge(df_merged, df_broker, on=['ticker', 'date'], how='left')
+        
+        # Fill missing Bandarologi values with neutral defaults
+        df_merged['net_foreign_value'] = df_merged['net_foreign_value'].fillna(0.0)
+        df_merged['acum_ratio'] = df_merged['acum_ratio'].fillna(0.0)
+        df_merged['acum_score'] = df_merged['acum_score'].fillna(50.0)
+        df_merged['acum_status'] = df_merged['acum_status'].fillna('Neutral')
         
         # Sort by ticker and date for pattern detection (which relies on shifting)
         df_merged = df_merged.sort_values(['ticker', 'date'])
@@ -84,7 +99,13 @@ def predict_tomorrow():
         # --- Market-Neutral Feature Engineering ---
         # Harus sama persis dengan yang ada di prepare_ml_data.py
         # Fitur-fitur ini dihitung relatif terhadap median pasar pada hari yang sama.
+        # Filter out suspended, delisted, or stale stocks that did not trade on the latest market date
+        # or had 0 trading volume on the latest day.
+        max_market_date = df_merged['date'].max()
         df_latest = df_merged.groupby('ticker').tail(1).copy()
+        df_latest = df_latest[(df_latest['date'] == max_market_date) & (df_latest['volume'] > 0)].copy()
+        print(f"Latest market date in database: {max_market_date.strftime('%Y-%m-%d')}")
+        print(f"Filtered out {len(df_merged.groupby('ticker').tail(1)) - len(df_latest)} suspended/stale/zero-volume stocks.")
         
         # return_1d: persentase perubahan harga dari open ke close
         df_latest['return_1d'] = (df_latest['close'] - df_latest['open']) / df_latest['open'].replace(0, float('nan'))
@@ -113,36 +134,60 @@ def predict_tomorrow():
         probs_t1 = model_t1.predict_proba(X_latest)[:, 1]
         probs_t3 = model_t3.predict_proba(X_latest)[:, 1]
         
-        df_latest['prob_up'] = probs_t1
+        # Blend ML probability with Bandarologi acum_score
+        # formula: Blended_Score = 0.6 * Prob_ML + 0.4 * (acum_score / 100.0)
+        # Note: acum_score defaults to 50.0 when not present
+        acum_score_val = df_latest['acum_score'].values
+        blended_prob_t1 = 0.6 * probs_t1 + 0.4 * (acum_score_val / 100.0)
+        
+        df_latest['prob_up'] = blended_prob_t1
         df_latest['prob_up_t3'] = probs_t3
         
-        # Create ranking DataFrame
+        # Create ranking DataFrame for Blended
         df_ranked = df_latest[['ticker', 'date', 'close', 'prob_up', 'prob_up_t3', 'patterns']].copy()
-        
-        # Save raw floats for numerical sorting in frontend
         df_ranked['prob_up_raw'] = df_ranked['prob_up']
         df_ranked['prob_up_t3_raw'] = df_ranked['prob_up_t3']
-        
-        # Sort by T+1 to keep default T+1 rank order
         df_ranked.sort_values(by='prob_up', ascending=False, inplace=True)
         df_ranked['rank'] = range(1, len(df_ranked) + 1)
         
-        # Save predictions history for Learning Engine
+        # Create ranking DataFrame for Pure Technical (no blending)
+        df_ranked_tech = df_latest[['ticker', 'date', 'close', 'patterns']].copy()
+        df_ranked_tech['prob_up'] = probs_t1
+        df_ranked_tech['prob_up_t3'] = probs_t3
+        df_ranked_tech['prob_up_raw'] = probs_t1
+        df_ranked_tech['prob_up_t3_raw'] = probs_t3
+        df_ranked_tech.sort_values(by='prob_up', ascending=False, inplace=True)
+        df_ranked_tech['rank'] = range(1, len(df_ranked_tech) + 1)
+        
+        # Determine prediction date based on current market time:
+        # If it is a weekday and before 16:00 (4:00 PM) WIB, we are predicting for today's EOD close (T+0).
+        # Otherwise (market closed or weekend), we are predicting for the next business day (T+1).
+        import datetime as dt
+        from datetime import timedelta
+        
+        last_data_date = df_ranked['date'].iloc[0]
+        if isinstance(last_data_date, str):
+            last_date_dt = dt.datetime.strptime(last_data_date, '%Y-%m-%d').date()
+        elif isinstance(last_data_date, pd.Timestamp):
+            last_date_dt = last_data_date.to_pydatetime().date()
+        else:
+            last_date_dt = last_data_date
+            
+        now_local = dt.datetime.now()
+        if now_local.weekday() < 5 and now_local.hour < 16:
+            # Predict for today (T+0)
+            pred_date_str = last_date_dt.strftime('%Y-%m-%d')
+        else:
+            # Predict for next business day (T+1)
+            next_bd = last_date_dt + timedelta(days=1)
+            while next_bd.weekday() >= 5:
+                next_bd += timedelta(days=1)
+            pred_date_str = next_bd.strftime('%Y-%m-%d')
+            
+        # Save predictions history for Learning Engine (using Blended)
         try:
             import json
-            from datetime import timedelta
-            
-            # Tanggal data terakhir (mis. 2026-06-05 Jumat)
-            last_data_date = df_ranked['date'].iloc[0]
-            
-            # Prediksi adalah untuk T+1 (hari kerja berikutnya)
-            # Skip weekend: Sabtu → Senin (+2), Minggu → Senin (+1), hari kerja → +1
-            next_day = last_data_date + timedelta(days=1)
-            while next_day.weekday() >= 5:  # 5=Sabtu, 6=Minggu
-                next_day += timedelta(days=1)
-            pred_date_str = next_day.strftime('%Y-%m-%d')
-            
-            print(f"Data date: {last_data_date.strftime('%Y-%m-%d')} -> Prediction for: {pred_date_str}")
+            print(f"Data date: {last_date_dt.strftime('%Y-%m-%d')} -> Prediction for: {pred_date_str}")
             history_file = os.path.join(DATA_DIR, 'predictions_history.json')
             
             # Load existing
@@ -157,9 +202,9 @@ def predict_tomorrow():
             # Remove existing record for the same date if it exists
             history = [h for h in history if h.get('date') != pred_date_str]
             
-            # Add new record
+            # Add new record (only keep top 100 to save space and speed up learning engine)
             day_predictions = []
-            for idx, row in df_ranked.iterrows():
+            for idx, row in df_ranked.head(100).iterrows():
                 day_predictions.append({
                     "ticker": row['ticker'],
                     "close": float(row['close']),
@@ -184,22 +229,17 @@ def predict_tomorrow():
         except Exception as eh:
             print(f"Error logging predictions history: {eh}")
             
-        # Format the output
+        # Format the output for Blended
         df_ranked['prob_up'] = (df_ranked['prob_up'] * 100).round(2).astype(str) + '%'
         df_ranked['prob_up_t3'] = (df_ranked['prob_up_t3'] * 100).round(2).astype(str) + '%'
         
-        # Override date ke T+1 (prediction_date) sebelum disimpan
-        # Kolom 'date' berisi tanggal data terakhir (mis. Jumat 05-06),
-        # tapi prediksi ini UNTUK hari berikutnya (Senin 08-06).
-        try:
-            from datetime import timedelta
-            last_date = df_ranked['date'].iloc[0]
-            next_bd = last_date + timedelta(days=1)
-            while next_bd.weekday() >= 5:
-                next_bd += timedelta(days=1)
-            df_ranked['date'] = next_bd.strftime('%Y-%m-%d')
-        except Exception:
-            pass  # Keep original date if any error
+        # Format the output for Pure Technical
+        df_ranked_tech['prob_up'] = (df_ranked_tech['prob_up'] * 100).round(2).astype(str) + '%'
+        df_ranked_tech['prob_up_t3'] = (df_ranked_tech['prob_up_t3'] * 100).round(2).astype(str) + '%'
+        
+        # Override date ke prediction_date sebelum disimpan
+        df_ranked['date'] = pred_date_str
+        df_ranked_tech['date'] = pred_date_str
         
         print("\n==========================================")
         print("  ML RANKING ENGINE: TOP 10 BUYS FOR T+1  ")
@@ -208,42 +248,18 @@ def predict_tomorrow():
         print("==========================================\n")
         
         df_ranked.to_csv(OUTPUT_PATH, index=False)
-        print(f"Full ranking saved to {OUTPUT_PATH}")
-
-        # ─────────────────────────────────────────────────────────────
-        # [Oversold Bounce specialized predictions]
-        # ─────────────────────────────────────────────────────────────
-        print("Generating specialized predictions for oversold stocks...")
-        df_latest_ov = df_latest[df_latest['rsi_14'] <= 35].copy()
+        print(f"Full blended ranking saved to {OUTPUT_PATH}")
         
-        if df_latest_ov.empty:
-            print("No oversold stocks found today to generate specialized rankings.")
-            df_ranked_ov = pd.DataFrame(columns=['ticker', 'date', 'close', 'prob_up', 'prob_up_raw', 'patterns', 'rank'])
-            df_ranked_ov.to_csv(OVERSOLD_OUTPUT_PATH, index=False)
-        else:
-            probs_ov = model_ov.predict_proba(df_latest_ov[features_list])[:, 1]
-            df_latest_ov['prob_up'] = probs_ov
-            df_latest_ov['prob_up_raw'] = probs_ov
-            
-            df_ranked_ov = df_latest_ov[['ticker', 'date', 'close', 'prob_up', 'prob_up_raw', 'patterns']].copy()
-            df_ranked_ov.sort_values(by='prob_up', ascending=False, inplace=True)
-            df_ranked_ov['rank'] = range(1, len(df_ranked_ov) + 1)
-            
-            # Format outputs
-            df_ranked_ov['prob_up'] = (df_ranked_ov['prob_up'] * 100).round(2).astype(str) + '%'
-            
-            # Adjust date to T+1
-            try:
-                date_str = next_bd.strftime('%Y-%m-%d') if 'next_bd' in locals() else str(df_latest_ov['date'].iloc[0].strftime('%Y-%m-%d'))
-                df_ranked_ov['date'] = date_str
-            except Exception:
-                pass
-                
-            df_ranked_ov.to_csv(OVERSOLD_OUTPUT_PATH, index=False)
-            print(f"Oversold ranking saved to {OVERSOLD_OUTPUT_PATH}")
+        TECH_OUTPUT_PATH = os.path.join(DATA_DIR, 'daily_ranking_tech.csv')
+        df_ranked_tech.to_csv(TECH_OUTPUT_PATH, index=False)
+        print(f"Full technical-only ranking saved to {TECH_OUTPUT_PATH}")
+
+
         
     except Exception as e:
         print(f"Error predicting: {e}")
+        import sys
+        sys.exit(1)
     finally:
         conn.close()
 

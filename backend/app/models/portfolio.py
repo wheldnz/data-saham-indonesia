@@ -13,3 +13,5 @@ class PortfolioTransaction(Base):
     quantity = Column(Integer, nullable=False)
     date = Column(DateTime(timezone=True), server_default=func.now())
     notes = Column(Text, nullable=True)
+    strategy = Column(String(50), nullable=True)
+    emotion = Column(String(50), nullable=True)

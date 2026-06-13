@@ -39,91 +39,116 @@ def restore_sleep():
         except Exception as e:
             print(f"[System] Failed to deactivate sleep prevention: {e}")
 
+def run_subprocess_stream(args, status_msg, progress_val, timeout_sec=1200):
+    update_status(status_msg, progress_val)
+    script_name = " ".join(args[1:]) if len(args) > 1 and args[1] != "-c" else args[0]
+    if len(args) > 2 and args[1] == "-c":
+        # Extract a short summary of the python inline script for display
+        script_name = "python inline: " + args[2].split(";")[0][:60] + "..."
+        
+    print(f"\n==========================================")
+    print(f" Running: {script_name}")
+    print(f"==========================================")
+    sys.stdout.flush()
+    
+    log_path = os.path.join(DATA_DIR, 'pipeline.log')
+    
+    with open(log_path, 'a', encoding='utf-8') as log_file:
+        log_file.write(f"\n--- [START] {script_name} ---\n")
+        log_file.flush()
+        
+        # Start subprocess with stdout/stderr combined
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # Stream output line-by-line
+        try:
+            for line in iter(process.stdout.readline, ''):
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                log_file.write(line)
+                log_file.flush()
+        except Exception as e_stream:
+            print(f"\n[Error] Streaming output failed: {e_stream}", file=sys.stderr)
+            log_file.write(f"\n[Error] Streaming output failed: {e_stream}\n")
+            log_file.flush()
+            
+        process.stdout.close()
+        try:
+            return_code = process.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            log_file.write(f"\n--- [TIMEOUT] {script_name} timed out after {timeout_sec} seconds ---\n")
+            log_file.flush()
+            update_status(f"Pipeline timeout at {script_name.split()[0]}", 0, False)
+            sys.exit(1)
+            
+        log_file.write(f"--- [FINISHED] {script_name} with exit code {return_code} ---\n")
+        log_file.flush()
+        
+        if return_code != 0:
+            print(f"\n[Error] Script {script_name} failed with exit code {return_code}", file=sys.stderr)
+            update_status(f"Pipeline failed at {script_name.split()[0]}", 0, False)
+            sys.exit(return_code)
+
 def run_pipeline():
     prevent_sleep()
     try:
+        # Write PID file to allow backend to check if we are running
+        pid_path = os.path.join(DATA_DIR, 'pipeline.pid')
+        try:
+            with open(pid_path, 'w') as f:
+                f.write(str(os.getpid()))
+        except Exception as ep:
+            print(f"Warning: Could not write pipeline PID file: {ep}")
+
         # Determine the python executable (prefer venv python if exists)
         python_exe = sys.executable
         venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'venv', 'Scripts', 'python.exe')
         if os.path.exists(venv_python):
             python_exe = venv_python
             
+        # Initialize log file
+        log_path = os.path.join(DATA_DIR, 'pipeline.log')
+        with open(log_path, 'w', encoding='utf-8') as f:
+            f.write("=== ALPHA HUNTER PIPELINE RUN LOG ===\n")
+            
         update_status("Starting Engine Pipeline...", 2)
         
         # 1. Ingest Data
-        update_status("Checking and ingesting latest market data...", 5)
-        print(f"Running ingest_data.py with {python_exe}...")
-        res = subprocess.run([python_exe, "ingest_data.py"], capture_output=True, text=True, timeout=900)
-        print(res.stdout)
-        if res.returncode != 0:
-            print(res.stderr, file=sys.stderr)
-            err_msg = res.stderr.strip().split('\n')[-1] if res.stderr else "Unknown error"
-            update_status(f"Ingestion failed: {err_msg}", 0, False)
-            sys.exit(1)
+        run_subprocess_stream([python_exe, "-u", "ingest_data.py"], "Checking and ingesting latest market data...", 5, timeout_sec=900)
             
         # 2. Feature Store
-        update_status("Calculating Technical Indicators...", 60)
-        print(f"Running calculate_features.py with {python_exe}...")
-        res = subprocess.run([python_exe, "calculate_features.py"], capture_output=True, text=True, timeout=1200)
-        print(res.stdout)
-        if res.returncode != 0:
-            print(res.stderr, file=sys.stderr)
-            err_msg = res.stderr.strip().split('\n')[-1] if res.stderr else "Unknown error"
-            update_status(f"Feature calculation failed: {err_msg}", 0, False)
-            sys.exit(1)
+        run_subprocess_stream([python_exe, "-u", "calculate_features.py"], "Calculating Technical Indicators...", 60, timeout_sec=1200)
             
         # 2b. Bandarologi Engine
-        update_status("Calculating Bandarologi (Broker Summaries)...", 70)
-        print("Calculating EOD Broker Summaries & accumulation status...")
-        res = subprocess.run([
-            python_exe, "-c", 
+        run_subprocess_stream([
+            python_exe, "-u", "-c", 
             "from app.services.bandarologi_service import calculate_broker_summaries; from app.db.database import SessionLocal; db = SessionLocal(); calculate_broker_summaries(db); db.close()"
-        ], capture_output=True, text=True, timeout=600)
-        print(res.stdout)
-        if res.returncode != 0:
-            print(res.stderr, file=sys.stderr)
-            err_msg = res.stderr.strip().split('\n')[-1] if res.stderr else "Unknown error"
-            update_status(f"Bandarologi calculation failed: {err_msg}", 0, False)
-            sys.exit(1)
+        ], "Calculating Bandarologi (Broker Summaries)...", 70, timeout_sec=600)
             
         # 3. Predict
-        update_status("AI is generating Top 10 Predictions...", 80)
-        print(f"Running predict_tomorrow.py with {python_exe}...")
-        res = subprocess.run([python_exe, "predict_tomorrow.py"], capture_output=True, text=True, timeout=600)
-        print(res.stdout)
-        if res.returncode != 0:
-            print(res.stderr, file=sys.stderr)
-            err_msg = res.stderr.strip().split('\n')[-1] if res.stderr else "Unknown error"
-            update_status(f"Prediction failed: {err_msg}", 0, False)
-            sys.exit(1)
+        run_subprocess_stream([python_exe, "-u", "predict_tomorrow.py"], "AI is generating Top 10 Predictions...", 80, timeout_sec=600)
             
         # 4. Watchlist & Scoring Engine
-        update_status("AI is calculating Watchlist scores...", 85)
-        print("Calculating Technical, Fundamental, Sentiment, Risk and Catalyst scores...")
-        res = subprocess.run([
-            python_exe, "-c", 
+        run_subprocess_stream([
+            python_exe, "-u", "-c", 
             "from app.services.scoring_service import calculate_all_scores; from app.db.database import SessionLocal; db = SessionLocal(); calculate_all_scores(db); db.close()"
-        ], capture_output=True, text=True, timeout=600)
-        print(res.stdout)
-        if res.returncode != 0:
-            print(res.stderr, file=sys.stderr)
-            err_msg = res.stderr.strip().split('\n')[-1] if res.stderr else "Unknown error"
-            update_status(f"Watchlist scoring failed: {err_msg}", 0, False)
-            sys.exit(1)
+        ], "AI is calculating Watchlist scores...", 85, timeout_sec=600)
             
         # 5. AI Learning Engine Feedback Loop
-        update_status("Running AI Learning Engine loops...", 92)
-        print("Running evaluations, regime detection, and trigger checks...")
-        res = subprocess.run([
-            python_exe, "-c", 
+        run_subprocess_stream([
+            python_exe, "-u", "-c", 
             "from app.services.learning_engine import evaluate_predictions, detect_market_regime, check_and_trigger_retraining; evaluate_predictions(); detect_market_regime(); check_and_trigger_retraining()"
-        ], capture_output=True, text=True, timeout=600)
-        print(res.stdout)
-        if res.returncode != 0:
-            print(res.stderr, file=sys.stderr)
-            err_msg = res.stderr.strip().split('\n')[-1] if res.stderr else "Unknown error"
-            update_status(f"Learning engine loops failed: {err_msg}", 0, False)
-            sys.exit(1)
+        ], "Running AI Learning Engine loops...", 92, timeout_sec=600)
             
         # Read the prediction date from daily_ranking.csv to display in the UI status
         pred_date_str = "Complete"
@@ -140,7 +165,7 @@ def run_pipeline():
             print(f"Error reading prediction date for status: {ec}")
             
         update_status(f"Update Complete! {pred_date_str}", 100, False)
-        print("Engine Pipeline Completed Successfully!")
+        print("\nEngine Pipeline Completed Successfully!")
         
     except Exception as e:
         update_status(f"Pipeline error: {str(e)}", 0, False)
