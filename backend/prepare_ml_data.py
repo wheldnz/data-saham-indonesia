@@ -52,6 +52,10 @@ def prepare_ml_data():
             print("Not enough data to prepare dataset.")
             return
 
+        # Filter out rows where volume is 0 or NaN (holidays, weekends, suspensions)
+        # to ensure they are not treated as active trading days.
+        df_ohlcv = df_ohlcv[df_ohlcv['volume'] > 0].copy()
+
         # ─────────────────────────────────────────────────────────────
         # [2] Merge OHLCV + Technical Features
         # ─────────────────────────────────────────────────────────────
