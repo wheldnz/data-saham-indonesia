@@ -55,7 +55,7 @@ def get_benchmark_curve(start_date_str, end_date_str, initial_capital, cron_date
         print(f"[Backtest] Error fetching benchmark index: {e}")
         return [{"time": dt, "value": initial_capital} for dt in cron_dates]
 
-def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5', stop_loss_pct=5.0, take_profit_pct=10.0):
+def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5', stop_loss_pct=5.0, take_profit_pct=10.0, max_positions=5):
     """
     Simulates portfolio trading using predictions.
     Supports SL/TP, custom capital, and different model strategies.
@@ -183,8 +183,6 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
         trades_log = []
         active_trades = []  # list of open positions
         
-        MAX_POSITIONS = 5
-        
         for today_str in cron_dates:
             # 1. Update Open Positions & Check Exits (SL, TP, holding period)
             still_active = []
@@ -283,7 +281,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
             equity_curve.append({"time": today_str, "value": round(portfolio_value, 2)})
             
             # 2. Enter New Trades
-            slots_available = MAX_POSITIONS - len(active_trades)
+            slots_available = max_positions - len(active_trades)
             if slots_available > 0 and today_str in candidates_by_date:
                 candidates = candidates_by_date[today_str]
                 
@@ -295,8 +293,8 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                 to_buy = candidates[:slots_available]
                 if to_buy:
                     # Equal weight capital allocation per position based on portfolio valuation
-                    # Max allocation per trade: 20% of portfolio value
-                    buy_power_per_slot = portfolio_value / MAX_POSITIONS
+                    # Max allocation per trade: based on max_positions
+                    buy_power_per_slot = portfolio_value / max_positions
                     
                     # Ensure we have enough cash (otherwise buy with remaining cash equally)
                     total_needed = buy_power_per_slot * len(to_buy)

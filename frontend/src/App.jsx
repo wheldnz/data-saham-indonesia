@@ -414,11 +414,12 @@ function App() {
   const [backtestTp, setBacktestTp] = useState("10.0")
   const [backtestDays, setBacktestDays] = useState(100)
   const [backtestSearch, setBacktestSearch] = useState("")
+  const [backtestMaxPositions, setBacktestMaxPositions] = useState("5")
 
   const handleRunBacktest = async () => {
     setIsBacktesting(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/backtest?days=${backtestDays}&capital=${backtestCapital}&strategy=${backtestStrategy}&sl=${backtestSl}&tp=${backtestTp}`);
+      const res = await fetch(`http://localhost:8000/api/backtest?days=${backtestDays}&capital=${backtestCapital}&strategy=${backtestStrategy}&sl=${backtestSl}&tp=${backtestTp}&max_positions=${backtestMaxPositions}`);
       const data = await res.json();
       if (!data.error) {
         setBacktestData(data);
@@ -2475,6 +2476,32 @@ function App() {
                     }}
                   />
                 </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>Maks. Jumlah Saham Portofolio</label>
+                <select 
+                  value={backtestMaxPositions}
+                  onChange={(e) => setBacktestMaxPositions(e.target.value)}
+                  style={{
+                    padding: '0.6rem',
+                    background: 'rgba(0,0,0,0.4)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '6px',
+                    color: '#fff',
+                    outline: 'none'
+                  }}
+                >
+                  <option value="1">1 Saham (Maks. 100% modal/slot)</option>
+                  <option value="2">2 Saham (Maks. 50% modal/slot)</option>
+                  <option value="3">3 Saham (Maks. 33% modal/slot)</option>
+                  <option value="4">4 Saham (Maks. 25% modal/slot)</option>
+                  <option value="5">5 Saham (Maks. 20% modal/slot)</option>
+                  <option value="7">7 Saham (Maks. 14% modal/slot)</option>
+                  <option value="10">10 Saham (Maks. 10% modal/slot)</option>
+                  <option value="15">15 Saham (Maks. 6.6% modal/slot)</option>
+                  <option value="20">20 Saham (Maks. 5% modal/slot)</option>
+                </select>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
