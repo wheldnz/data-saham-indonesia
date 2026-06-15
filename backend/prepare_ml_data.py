@@ -73,8 +73,8 @@ def prepare_ml_data():
         print("Calculating Target T+1 and T+3...")
         df_merged['next_close'] = df_merged.groupby('ticker')['close'].shift(-1)
         df_merged['close_t3'] = df_merged.groupby('ticker')['close'].shift(-3)
-        df_merged['target_1d_up'] = (df_merged['next_close'] > df_merged['close']).astype(int)
-        df_merged['target_3d_up'] = (df_merged['close_t3'] > df_merged['close']).astype(int)
+        df_merged['target_1d_up'] = np.where(df_merged['next_close'].isna(), np.nan, (df_merged['next_close'] > df_merged['close']).astype(float))
+        df_merged['target_3d_up'] = np.where(df_merged['close_t3'].isna(), np.nan, (df_merged['close_t3'] > df_merged['close']).astype(float))
 
         # ── FIX 3: Survivorship label correction ────────────────────
         # Untuk saham yang sudah tidak aktif (suspend/delisting),
@@ -91,14 +91,15 @@ def prepare_ml_data():
                     # Override 20 baris terakhir (atau semua jika < 20)
                     last_n = min(20, len(ticker_indices))
                     last_indices = ticker_indices[-last_n:]
-                    df_merged.loc[last_indices, 'target_1d_up'] = 0
-                    df_merged.loc[last_indices, 'target_3d_up'] = 0
+                    df_merged.loc[last_indices, 'target_1d_up'] = 0.0
+                    df_merged.loc[last_indices, 'target_3d_up'] = 0.0
                     corrected_count += last_n
             print(f"  Survivorship correction: {corrected_count} rows overridden to target=0 (T+1 and T+3).")
         # ─────────────────────────────────────────────────────────────
 
-        # Drop baris tanpa data depan (baris-baris terakhir per ticker)
-        df_final = df_merged.dropna(subset=['next_close', 'close_t3']).copy()
+        # Preserve all rows including the last day (where next_close/targets are NaN)
+        # so that backtesting can resolve the trades of preceding days.
+        df_final = df_merged.copy()
 
         # Hapus data masa depan — JANGAN pernah masuk ke fitur
         df_final = df_final.drop(columns=['next_close', 'close_t3'])
@@ -161,10 +162,12 @@ def prepare_ml_data():
         # [5] Final cleanup
         # ─────────────────────────────────────────────────────────────
         # Drop rows with NaN di technical features (awal historis data)
-        df_final = df_final.dropna()
+        feature_cols_to_check = [c for c in df_final.columns if c not in ['target_1d_up', 'target_3d_up']]
+        df_final = df_final.dropna(subset=feature_cols_to_check)
 
         # Pastikan tidak ada inf
-        df_final = df_final.replace([np.inf, -np.inf], np.nan).dropna()
+        df_final = df_final.replace([np.inf, -np.inf], np.nan)
+        df_final = df_final.dropna(subset=feature_cols_to_check)
 
         print(f"\nFinal dataset shape: {df_final.shape}")
         print(f"Date range: {df_final['date'].min()} to {df_final['date'].max()}")

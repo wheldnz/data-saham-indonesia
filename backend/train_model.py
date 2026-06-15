@@ -71,17 +71,21 @@ def train_model():
         print(f"  STARTING TRAINING FOR HORIZON: {horizon} (Target: {target_col})")
         print(f"{'='*60}")
 
-        y = df[target_col].values
+        # Drop rows where target is NaN for this specific horizon training
+        df_curr = df.dropna(subset=[target_col]).copy()
+        X_curr = df_curr[feature_cols].values
+        y_curr = df_curr[target_col].values
+        dates_curr = df_curr['date'].values
 
         # Baseline (majority class)
-        baseline_acc = 1 - y.mean() if y.mean() < 0.5 else y.mean()
+        baseline_acc = 1 - y_curr.mean() if y_curr.mean() < 0.5 else y_curr.mean()
         print(f"Baseline Accuracy (always guessing majority class): {baseline_acc:.2%}")
 
         # Class Imbalance Correction via scale_pos_weight
-        n_class0 = int((y == 0).sum())
-        n_class1 = int((y == 1).sum())
+        n_class0 = int((y_curr == 0).sum())
+        n_class1 = int((y_curr == 1).sum())
         scale_pos_weight = n_class0 / n_class1 if n_class1 > 0 else 1.0
-        print(f"Class distribution — 0 (Down): {n_class0:,} ({n_class0/len(y):.1%}) | 1 (Up): {n_class1:,} ({n_class1/len(y):.1%})")
+        print(f"Class distribution — 0 (Down): {n_class0:,} ({n_class0/len(y_curr):.1%}) | 1 (Up): {n_class1:,} ({n_class1/len(y_curr):.1%})")
         print(f"scale_pos_weight = {scale_pos_weight:.4f} (applied to XGBoost)")
 
         # Walk-Forward Cross-Validation
@@ -109,14 +113,14 @@ def train_model():
 
         print(f"\n[Walk-Forward CV ({N_SPLITS} Folds, Gap={PURGE_GAP})]")
 
-        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X), start=1):
-            X_train, X_test = X[train_idx], X[test_idx]
-            y_train, y_test = y[train_idx], y[test_idx]
+        for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X_curr), start=1):
+            X_train, X_test = X_curr[train_idx], X_curr[test_idx]
+            y_train, y_test = y_curr[train_idx], y_curr[test_idx]
 
-            train_start = pd.Timestamp(dates[train_idx[0]]).date()
-            train_end   = pd.Timestamp(dates[train_idx[-1]]).date()
-            test_start  = pd.Timestamp(dates[test_idx[0]]).date()
-            test_end    = pd.Timestamp(dates[test_idx[-1]]).date()
+            train_start = pd.Timestamp(dates_curr[train_idx[0]]).date()
+            train_end   = pd.Timestamp(dates_curr[train_idx[-1]]).date()
+            test_start  = pd.Timestamp(dates_curr[test_idx[0]]).date()
+            test_end    = pd.Timestamp(dates_curr[test_idx[-1]]).date()
 
             model_cv = xgb.XGBClassifier(**model_params)
             model_cv.fit(X_train, y_train, verbose=False)
@@ -163,9 +167,9 @@ def train_model():
         print(classification_report(all_y_true, all_y_pred, digits=4))
 
         # Train Final Model on ALL data
-        print(f"\n  [Final Model] Melatih model {horizon} pada seluruh {len(X):,} sampel...")
+        print(f"\n  [Final Model] Melatih model {horizon} pada seluruh {len(X_curr):,} sampel...")
         final_model = xgb.XGBClassifier(**model_params)
-        final_model.fit(X, y, verbose=False)
+        final_model.fit(X_curr, y_curr, verbose=False)
         print(f"  [Final Model] Pelatihan selesai. Menyimpan ke {model_save_path}...")
         joblib.dump(final_model, model_save_path)
 
