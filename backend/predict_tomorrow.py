@@ -98,7 +98,35 @@ def predict_tomorrow():
         
         # --- Market-Neutral Feature Engineering ---
         # Harus sama persis dengan yang ada di prepare_ml_data.py
-        # Fitur-fitur ini dihitung relatif terhadap median pasar pada hari yang sama.
+        # 1. return_1d (close-to-close percentage)
+        df_merged['prev_close'] = df_merged.groupby('ticker')['close'].shift(1)
+        df_merged['return_1d'] = np.where(
+            df_merged['prev_close'] > 0,
+            (df_merged['close'] / df_merged['prev_close'] - 1.0) * 100.0,
+            0.0
+        )
+        
+        # 2. close_vs_sma20_pct (close vs SMA20 percentage)
+        df_merged['close_vs_sma20_pct'] = np.where(
+            df_merged['sma_20'] > 0,
+            (df_merged['close'] / df_merged['sma_20'] - 1.0) * 100.0,
+            0.0
+        )
+        
+        # 3. volume_ratio (volume vs volume_sma_20)
+        df_merged['volume_ratio'] = np.where(
+            df_merged['volume_sma_20'] > 0,
+            df_merged['volume'] / df_merged['volume_sma_20'],
+            1.0
+        )
+        
+        # 4. rsi_relative (RSI14 relative to daily median)
+        daily_rsi_median = df_merged.groupby('date')['rsi_14'].transform('median')
+        df_merged['rsi_relative'] = df_merged['rsi_14'] - daily_rsi_median
+        
+        # 5. is_active (inference stocks default to 1.0)
+        df_merged['is_active'] = 1.0
+
         # Filter out suspended, delisted, or stale stocks that did not trade on the latest market date
         # or had 0 trading volume on the latest day.
         max_market_date = df_merged['date'].max()
@@ -107,24 +135,8 @@ def predict_tomorrow():
         print(f"Latest market date in database: {max_market_date.strftime('%Y-%m-%d')}")
         print(f"Filtered out {len(df_merged.groupby('ticker').tail(1)) - len(df_latest)} suspended/stale/zero-volume stocks.")
         
-        # return_1d: persentase perubahan harga dari open ke close
-        df_latest['return_1d'] = (df_latest['close'] - df_latest['open']) / df_latest['open'].replace(0, float('nan'))
-        
-        # close_vs_sma20_pct: posisi close relatif terhadap SMA20
-        df_latest['close_vs_sma20_pct'] = (df_latest['close'] - df_latest['sma_20']) / df_latest['sma_20'].replace(0, float('nan'))
-        
-        # volume_ratio: volume relatif terhadap SMA volume 20-hari
-        df_latest['volume_ratio'] = df_latest['volume'] / df_latest['volume_sma_20'].replace(0, float('nan'))
-        
-        # rsi_relative: RSI14 relatif terhadap median RSI14 semua saham hari ini
-        rsi_median = df_latest['rsi_14'].median()
-        df_latest['rsi_relative'] = df_latest['rsi_14'] - rsi_median
-        
-        # is_active: semua saham di inference dianggap aktif (=1)
-        df_latest['is_active'] = 1.0
-        
         # Drop rows with NaN features
-        df_latest = df_latest.dropna()
+        df_latest = df_latest.dropna(subset=features_list)
         print(f"Generating predictions for {len(df_latest)} active stocks...")
         
         # Ensure columns match exactly what the model expects
