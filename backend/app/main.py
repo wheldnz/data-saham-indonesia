@@ -119,6 +119,24 @@ def save_pipeline_pid(pid: int):
         print(f"Error saving pipeline PID: {e}")
 
 def is_process_running(pid: int) -> bool:
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            h_process = kernel32.OpenProcess(0x1000, False, pid)
+            if h_process:
+                exit_code = ctypes.c_ulong()
+                kernel32.GetExitCodeProcess(h_process, ctypes.byref(exit_code))
+                kernel32.CloseHandle(h_process)
+                return exit_code.value == 259 # STILL_ACTIVE
+            else:
+                err = kernel32.GetLastError()
+                if err == 5: # Access Denied
+                    return True
+                return False
+        except Exception:
+            pass
+            
     try:
         os.kill(pid, 0)
         return True
@@ -133,7 +151,12 @@ def trigger_pipeline_background():
         python_exe = venv_python
     print(f"[Scheduler] Triggering pipeline via: {python_exe} {script_path}")
     try:
-        proc = subprocess.Popen([python_exe, script_path])
+        proc = subprocess.Popen(
+            [python_exe, "-u", script_path],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         save_pipeline_pid(proc.pid)
     except Exception as e:
         print(f"[Scheduler] Failed to start pipeline: {e}")
@@ -141,18 +164,6 @@ def trigger_pipeline_background():
 def scheduler_worker():
     print("[Scheduler] Background scheduler worker thread started.")
     
-    # Sleep prevention for server daemon thread
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            # ES_CONTINUOUS = 0x80000000
-            # ES_SYSTEM_REQUIRED = 0x00000001
-            # Keeps the system awake while the backend process runs.
-            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
-            print("[Scheduler] Windows Sleep prevention activated for FastAPI Server.")
-        except Exception as es:
-            print(f"[Scheduler] Failed to activate sleep prevention: {es}")
-            
     last_trigger_date = ""
     
     while True:
@@ -364,28 +375,34 @@ def get_update_status():
         
     # Self-healing logic: Check if the process is actually running
     if status.get("is_running", False):
-        pid_path = os.path.join(DATA_DIR, 'pipeline.pid')
-        if os.path.exists(pid_path):
-            try:
-                with open(pid_path, 'r') as f:
-                    pid = int(f.read().strip())
-                if not is_process_running(pid):
-                    # Process died or was terminated, reset status
-                    status["is_running"] = False
-                    status["message"] = "Pipeline completed or stopped"
+        # If status.json was recently modified (within 120 seconds), trust it.
+        # The pipeline updates status.json frequently during each step.
+        try:
+            mtime = os.path.getmtime(status_path)
+            age_seconds = time.time() - mtime
+        except Exception:
+            age_seconds = 9999  # If we can't read mtime, assume stale
+        
+        if age_seconds > 120:
+            # status.json is stale (>2 min old), check PID to confirm
+            pid_path = os.path.join(DATA_DIR, 'pipeline.pid')
+            process_alive = False
+            if os.path.exists(pid_path):
+                try:
+                    with open(pid_path, 'r') as f:
+                        pid = int(f.read().strip())
+                    process_alive = is_process_running(pid)
+                except Exception:
+                    pass
+            
+            if not process_alive:
+                status["is_running"] = False
+                status["message"] = "Pipeline completed or stopped"
+                try:
                     with open(status_path, 'w') as f:
                         json.dump(status, f)
-            except Exception:
-                pass
-        else:
-            # No PID file exists, but it says running. Reset to be safe.
-            status["is_running"] = False
-            status["message"] = "Idle"
-            try:
-                with open(status_path, 'w') as f:
-                    json.dump(status, f)
-            except Exception:
-                pass
+                except Exception:
+                    pass
                 
     return status
 
@@ -407,7 +424,12 @@ def trigger_update(background_tasks: BackgroundTasks):
     # Run pipeline in background using subprocess
     def run_script():
         try:
-            proc = subprocess.Popen([python_exe, script_path])
+            proc = subprocess.Popen(
+                [python_exe, "-u", script_path],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             save_pipeline_pid(proc.pid)
         except Exception as e:
             print(f"Failed to start pipeline: {e}")

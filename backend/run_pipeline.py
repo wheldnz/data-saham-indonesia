@@ -10,40 +10,50 @@ DATA_DIR = os.path.join(os.getcwd(), 'data')
 STATUS_FILE = os.path.join(DATA_DIR, 'status.json')
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# ─────────────────────────────────────────────────────────────
+# Headless-safe: redirect stdout/stderr to log file.
+# When launched with CREATE_NO_WINDOW, sys.stdout may be None
+# or an invalid handle that crashes on write(). We redirect
+# both streams to a persistent log file immediately.
+# ─────────────────────────────────────────────────────────────
+LOG_PATH = os.path.join(DATA_DIR, 'pipeline.log')
+
+def _setup_logging():
+    """Redirect stdout and stderr to the pipeline log file."""
+    try:
+        log_file = open(LOG_PATH, 'w', encoding='utf-8', buffering=1)
+        sys.stdout = log_file
+        sys.stderr = log_file
+    except Exception:
+        # Last resort: redirect to devnull so nothing crashes
+        devnull = open(os.devnull, 'w')
+        sys.stdout = devnull
+        sys.stderr = devnull
+
+_setup_logging()
+
+
 def update_status(message, progress, is_running=True):
-    with open(STATUS_FILE, 'w') as f:
-        json.dump({
-            "message": message, 
-            "progress": progress, 
-            "is_running": is_running
-        }, f)
+    try:
+        with open(STATUS_FILE, 'w') as f:
+            json.dump({
+                "message": message, 
+                "progress": progress, 
+                "is_running": is_running
+            }, f)
+    except Exception:
+        pass
 
 def prevent_sleep():
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            # ES_CONTINUOUS = 0x80000000
-            # ES_SYSTEM_REQUIRED = 0x00000001
-            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
-            print("[System] Windows Sleep prevention activated for pipeline.")
-        except Exception as e:
-            print(f"[System] Failed to activate sleep prevention: {e}")
+    pass
 
 def restore_sleep():
-    if sys.platform == 'win32':
-        try:
-            import ctypes
-            # ES_CONTINUOUS
-            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
-            print("[System] Windows Sleep prevention deactivated.")
-        except Exception as e:
-            print(f"[System] Failed to deactivate sleep prevention: {e}")
+    pass
 
 def run_subprocess_stream(args, status_msg, progress_val, timeout_sec=1200):
     update_status(status_msg, progress_val)
     script_name = " ".join(args[1:]) if len(args) > 1 and args[1] != "-c" else args[0]
     if len(args) > 2 and args[1] == "-c":
-        # Extract a short summary of the python inline script for display
         script_name = "python inline: " + args[2].split(";")[0][:60] + "..."
         
     print(f"\n==========================================")
@@ -51,53 +61,43 @@ def run_subprocess_stream(args, status_msg, progress_val, timeout_sec=1200):
     print(f"==========================================")
     sys.stdout.flush()
     
-    log_path = os.path.join(DATA_DIR, 'pipeline.log')
+    # Start subprocess with stdout/stderr combined
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        bufsize=1,
+        universal_newlines=True
+    )
     
-    with open(log_path, 'a', encoding='utf-8') as log_file:
-        log_file.write(f"\n--- [START] {script_name} ---\n")
-        log_file.flush()
+    # Stream output line-by-line to our log (which is sys.stdout)
+    try:
+        for line in iter(process.stdout.readline, ''):
+            sys.stdout.write(line)
+            sys.stdout.flush()
+    except Exception as e_stream:
+        print(f"\n[Error] Streaming output failed: {e_stream}")
         
-        # Start subprocess with stdout/stderr combined
-        process = subprocess.Popen(
-            args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            bufsize=1,
-            universal_newlines=True
-        )
+    process.stdout.close()
+    try:
+        return_code = process.wait(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        print(f"\n--- [TIMEOUT] {script_name} timed out after {timeout_sec} seconds ---")
+        sys.stdout.flush()
+        update_status(f"Pipeline timeout at {script_name.split()[0]}", 0, False)
+        sys.exit(1)
         
-        # Stream output line-by-line
-        try:
-            for line in iter(process.stdout.readline, ''):
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                log_file.write(line)
-                log_file.flush()
-        except Exception as e_stream:
-            print(f"\n[Error] Streaming output failed: {e_stream}", file=sys.stderr)
-            log_file.write(f"\n[Error] Streaming output failed: {e_stream}\n")
-            log_file.flush()
-            
-        process.stdout.close()
-        try:
-            return_code = process.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            log_file.write(f"\n--- [TIMEOUT] {script_name} timed out after {timeout_sec} seconds ---\n")
-            log_file.flush()
-            update_status(f"Pipeline timeout at {script_name.split()[0]}", 0, False)
-            sys.exit(1)
-            
-        log_file.write(f"--- [FINISHED] {script_name} with exit code {return_code} ---\n")
-        log_file.flush()
-        
-        if return_code != 0:
-            print(f"\n[Error] Script {script_name} failed with exit code {return_code}", file=sys.stderr)
-            update_status(f"Pipeline failed at {script_name.split()[0]}", 0, False)
-            sys.exit(return_code)
+    print(f"--- [FINISHED] {script_name} with exit code {return_code} ---")
+    sys.stdout.flush()
+    
+    if return_code != 0:
+        print(f"\n[Error] Script {script_name} failed with exit code {return_code}")
+        update_status(f"Pipeline failed at {script_name.split()[0]}", 0, False)
+        sys.exit(return_code)
 
 def run_pipeline():
     prevent_sleep()
@@ -116,11 +116,7 @@ def run_pipeline():
         if os.path.exists(venv_python):
             python_exe = venv_python
             
-        # Initialize log file
-        log_path = os.path.join(DATA_DIR, 'pipeline.log')
-        with open(log_path, 'w', encoding='utf-8') as f:
-            f.write("=== ALPHA HUNTER PIPELINE RUN LOG ===\n")
-            
+        print("=== ALPHA HUNTER PIPELINE RUN LOG ===")
         update_status("Starting Engine Pipeline...", 2)
         
         # 1. Ingest Data
@@ -169,7 +165,7 @@ def run_pipeline():
         
     except Exception as e:
         update_status(f"Pipeline error: {str(e)}", 0, False)
-        print(f"Pipeline error: {e}", file=sys.stderr)
+        print(f"Pipeline error: {e}")
         sys.exit(1)
     finally:
         restore_sleep()

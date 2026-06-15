@@ -13,8 +13,7 @@ function App() {
   const [selectedTicker, setSelectedTicker] = useState(null)
   const [backtestData, setBacktestData] = useState(null)
   const [isBacktesting, setIsBacktesting] = useState(false)
-  const [schedulerEnabled, setSchedulerEnabled] = useState(true)
-  const [schedulerNextRuns, setSchedulerNextRuns] = useState([])
+
   
   // Watchlist & Scoring state variables
   const [activeTab, setActiveTab] = useState("screener") // "screener" or "watchlist"
@@ -95,29 +94,10 @@ function App() {
     fetchPredictions()
     fetchStatus()
     fetchWatchlists()
-    fetchSchedulerStatus()
+
   }, [])
 
-  const fetchSchedulerStatus = async () => {
-    try {
-      const res = await fetch('http://localhost:8000/api/scheduler')
-      const data = await res.json()
-      setSchedulerEnabled(data.enabled)
-      setSchedulerNextRuns(data.next_runs || [])
-    } catch (e) {
-      console.error("Error fetching scheduler status:", e)
-    }
-  }
 
-  const handleToggleScheduler = async () => {
-    try {
-      const res = await fetch('http://localhost:8000/api/scheduler/toggle', { method: 'POST' })
-      const data = await res.json()
-      setSchedulerEnabled(data.enabled)
-    } catch (e) {
-      console.error("Error toggling scheduler:", e)
-    }
-  }
 
   // Watchlists trigger item reloading
   useEffect(() => {
@@ -861,48 +841,7 @@ function App() {
             >
               {status.is_running ? `Processing (${status.progress}%)` : 'UPDATE AI PREDICTIONS'}
             </button>
-            
-            <div className="scheduler-panel" style={{ 
-              marginTop: '0.5rem', 
-              marginBottom: '0.8rem', 
-              padding: '0.8rem', 
-              background: 'rgba(255, 255, 255, 0.02)', 
-              borderRadius: '8px', 
-              border: '1px solid rgba(255, 255, 255, 0.05)',
-              width: '100%'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: '#94a3b8' }}>Jadwal Otomatis (12:30 & 18:30)</span>
-                <label style={{ position: 'relative', display: 'inline-block', width: '38px', height: '20px', cursor: 'pointer' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={schedulerEnabled} 
-                    onChange={handleToggleScheduler}
-                    style={{ opacity: 0, width: 0, height: 0 }}
-                  />
-                  <span style={{
-                    position: 'absolute',
-                    top: 0, left: 0, right: 0, bottom: 0,
-                    backgroundColor: schedulerEnabled ? '#00d2ff' : '#334155',
-                    transition: '0.3s',
-                    borderRadius: '20px'
-                  }}>
-                    <span style={{
-                      position: 'absolute',
-                      height: '14px', width: '14px',
-                      left: schedulerEnabled ? '20px' : '4px',
-                      bottom: '3px',
-                      backgroundColor: '#fff',
-                      transition: '0.3s',
-                      borderRadius: '50%'
-                    }}></span>
-                  </span>
-                </label>
-              </div>
-              <p style={{ fontSize: '0.75rem', color: schedulerEnabled ? '#00d2ff' : '#64748b', margin: '4px 0 0 0' }}>
-                {schedulerEnabled ? '● Aktif (Senin - Jumat)' : '○ Nonaktif (Manual)'}
-              </p>
-            </div>
+
             
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%', marginTop: '0.5rem' }}>
               <button 
