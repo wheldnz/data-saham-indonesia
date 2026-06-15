@@ -167,17 +167,15 @@ def calculate_technical_features():
             # Menggunakan raw SQL INSERT OR IGNORE agar tidak crash
             # saat ada duplikat (bisa terjadi jika script dijalankan ulang).
             # Ini jauh lebih robust daripada SQLAlchemy ORM add_all().
-            rows_to_insert = []
             max_feat_str = max_feat.strftime('%Y-%m-%d') if hasattr(max_feat, 'strftime') else str(max_feat) if max_feat else None
-            for _, row in df.iterrows():
+            df_new = df[df['date'] > max_feat_str] if max_feat_str else df
+
+            rows_to_insert = []
+            for _, row in df_new.iterrows():
                 r = row.where(pd.notnull(row), None)
                 date_val = r['date']
                 date_str = date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else str(date_val)
                 
-                # Only insert new feature rows to avoid SQLite processing massive duplicate histories
-                if max_feat_str and date_str <= max_feat_str:
-                    continue
-                    
                 rows_to_insert.append((
                     ticker, date_str,
                     r.get('sma_5'), r.get('sma_20'), r.get('sma_50'), r.get('sma_200'),
