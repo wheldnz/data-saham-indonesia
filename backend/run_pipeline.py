@@ -143,8 +143,17 @@ def run_pipeline():
         # 5. AI Learning Engine Feedback Loop
         run_subprocess_stream([
             python_exe, "-u", "-c", 
-            "from app.services.learning_engine import evaluate_predictions, detect_market_regime, check_and_trigger_retraining; evaluate_predictions(); detect_market_regime(); check_and_trigger_retraining()"
+            "from app.services.learning_engine import evaluate_predictions, detect_market_regime, check_and_trigger_retraining; evaluate_predictions(); detect_market_regime(); check_and_trigger_retraining(blocking=True)"
         ], "Running AI Learning Engine loops...", 92, timeout_sec=600)
+            
+        # 5b. Prepare ML Dataset for Backtesting
+        run_subprocess_stream([python_exe, "-u", "prepare_ml_data.py"], "Compiling ML Dataset for Backtesting...", 96, timeout_sec=600)
+            
+        # 5c. Prepare Adaptive ML Dataset for Backtesting
+        run_subprocess_stream([python_exe, "-u", "prepare_ml_data_adaptive.py"], "Compiling Adaptive ML Dataset...", 98, timeout_sec=600)
+            
+        # 5d. Generate Adaptive AI Predictions
+        run_subprocess_stream([python_exe, "-u", "predict_tomorrow_adaptive.py"], "Generating Adaptive AI Predictions...", 99, timeout_sec=600)
             
         # Read the prediction date from daily_ranking.csv to display in the UI status
         pred_date_str = "Complete"
@@ -162,6 +171,20 @@ def run_pipeline():
             
         update_status(f"Update Complete! {pred_date_str}", 100, False)
         print("\nEngine Pipeline Completed Successfully!")
+        
+        # Trigger cache reload in backend FastAPI server
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                "http://localhost:8000/api/cache/reload",
+                method="POST"
+            )
+            # Short timeout so it doesn't block if server isn't listening on 8000
+            with urllib.request.urlopen(req, timeout=3) as response:
+                print(f"Cache reload request sent: {response.status}")
+        except Exception as e:
+            print(f"Warning: Could not trigger cache reload via API: {e}")
+            
         
     except Exception as e:
         update_status(f"Pipeline error: {str(e)}", 0, False)

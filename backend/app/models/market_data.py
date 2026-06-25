@@ -45,6 +45,9 @@ class TechnicalFeature(Base):
     adx_14 = Column(Float)
     obv = Column(BigInteger)
     volume_sma_20 = Column(BigInteger)
+    mfi_14 = Column(Float)
+    willr_14 = Column(Float)
+    cci_20 = Column(Float)
     
     stock = relationship("Stock")
 

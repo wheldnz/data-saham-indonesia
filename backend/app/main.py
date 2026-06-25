@@ -81,7 +81,47 @@ def root():
 def health_check():
     return {"status": "healthy"}
 
+from app.services import dataset_cache
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
+
+@app.on_event("startup")
+def startup_event():
+    # Preload the ML dataset cache on app startup
+    dataset_cache.load_cache()
+    dataset_cache.load_cache_adaptive()
+
+    # Clean up stale retraining status in retraining_history.json
+    history_path = os.path.join(DATA_DIR, 'retraining_history.json')
+    if os.path.exists(history_path):
+        try:
+            import json
+            with open(history_path, 'r') as f:
+                history = json.load(f)
+            modified = False
+            for run in history:
+                if run.get('status') == 'running':
+                    run['status'] = 'failed'
+                    run['error'] = 'Server restarted or process terminated during training'
+                    modified = True
+            if modified:
+                with open(history_path, 'w') as f:
+                    json.dump(history, f, indent=2)
+                print("[Startup] Cleaned up stale retraining status in retraining_history.json")
+        except Exception as e:
+            print("[Startup] Error cleaning up stale retraining history:", e)
+
+@app.post("/api/cache/reload")
+def reload_cache():
+    success = dataset_cache.load_cache(force_reload=True)
+    success_adaptive = dataset_cache.load_cache_adaptive(force_reload=True)
+    if success or success_adaptive:
+        return {
+            "status": "success", 
+            "message": f"In-memory caches reloaded. Standard: {'success' if success else 'failed'}, Adaptive: {'success' if success_adaptive else 'failed'}"
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Failed to reload caches")
 
 # ─────────────────────────────────────────────────────────────
 # [EOD Scheduler Service]
@@ -208,12 +248,15 @@ scheduler_thread.start()
 
 
 @app.get("/api/predictions")
-def get_predictions():
+def get_predictions(min_liquidity: float = 1000000000.0):
     csv_path = os.path.join(DATA_DIR, 'daily_ranking.csv')
     if not os.path.exists(csv_path):
         return {"data": []}
     
     df = pd.read_csv(csv_path)
+    effective_liquidity = min_liquidity
+    if 'value' in df.columns:
+        df = df[df['value'] >= effective_liquidity]
     df = df.replace([float('inf'), float('-inf')], None).fillna('')
     data = df.to_dict(orient="records")
     
@@ -224,7 +267,7 @@ def get_predictions():
         conn = sqlite3.connect(db_path)
         try:
             query = '''
-                SELECT ticker, acum_status, acum_score
+                SELECT ticker, acum_status, acum_score, net_foreign_value
                 FROM broker_summaries
                 WHERE (ticker, date) IN (
                     SELECT ticker, MAX(date)
@@ -233,14 +276,15 @@ def get_predictions():
                 )
             '''
             df_bs = pd.read_sql_query(query, conn)
-            status_map = {row['ticker']: (row['acum_status'], row['acum_score']) for _, row in df_bs.iterrows()}
+            status_map = {row['ticker']: (row['acum_status'], row['acum_score'], row['net_foreign_value']) for _, row in df_bs.iterrows()}
             
             for record in data:
                 ticker_val = record.get("Ticker") or record.get("ticker")
                 if ticker_val:
-                    acum_status, acum_score = status_map.get(ticker_val, ("Neutral", 50.0))
+                    acum_status, acum_score, net_foreign = status_map.get(ticker_val, ("Neutral", 50.0, 0.0))
                     record["bandarologi_status"] = acum_status
                     record["bandarologi_score"] = acum_score
+                    record["net_foreign_value"] = net_foreign
         except Exception as e:
             print("Error injecting bandarologi in predictions:", e)
         finally:
@@ -250,12 +294,15 @@ def get_predictions():
 
 
 @app.get("/api/predictions/tech")
-def get_technical_predictions():
+def get_technical_predictions(min_liquidity: float = 1000000000.0):
     csv_path = os.path.join(DATA_DIR, 'daily_ranking_tech.csv')
     if not os.path.exists(csv_path):
         return {"data": []}
     
     df = pd.read_csv(csv_path)
+    effective_liquidity = min_liquidity
+    if 'value' in df.columns:
+        df = df[df['value'] >= effective_liquidity]
     df = df.replace([float('inf'), float('-inf')], None).fillna('')
     data = df.to_dict(orient="records")
     
@@ -266,7 +313,7 @@ def get_technical_predictions():
         conn = sqlite3.connect(db_path)
         try:
             query = '''
-                SELECT ticker, acum_status, acum_score
+                SELECT ticker, acum_status, acum_score, net_foreign_value
                 FROM broker_summaries
                 WHERE (ticker, date) IN (
                     SELECT ticker, MAX(date)
@@ -275,14 +322,15 @@ def get_technical_predictions():
                 )
             '''
             df_bs = pd.read_sql_query(query, conn)
-            status_map = {row['ticker']: (row['acum_status'], row['acum_score']) for _, row in df_bs.iterrows()}
+            status_map = {row['ticker']: (row['acum_status'], row['acum_score'], row['net_foreign_value']) for _, row in df_bs.iterrows()}
             
             for record in data:
                 ticker_val = record.get("Ticker") or record.get("ticker")
                 if ticker_val:
-                    acum_status, acum_score = status_map.get(ticker_val, ("Neutral", 50.0))
+                    acum_status, acum_score, net_foreign = status_map.get(ticker_val, ("Neutral", 50.0, 0.0))
                     record["bandarologi_status"] = acum_status
                     record["bandarologi_score"] = acum_score
+                    record["net_foreign_value"] = net_foreign
         except Exception as e:
             print("Error injecting bandarologi in technical predictions:", e)
         finally:
@@ -303,10 +351,11 @@ def get_bandarologi_data(ticker: str):
     try:
         # Fetch the latest broker summary
         query_latest = '''
-            SELECT top_buyers, top_sellers, net_foreign_value, acum_ratio, acum_status, acum_score, date
-            FROM broker_summaries
-            WHERE ticker = ?
-            ORDER BY date DESC
+            SELECT b.top_buyers, b.top_sellers, b.net_foreign_value, b.acum_ratio, b.acum_status, b.acum_score, b.date, o.value as total_value
+            FROM broker_summaries b
+            LEFT JOIN daily_ohlcv o ON b.ticker = o.ticker AND b.date = o.date
+            WHERE b.ticker = ?
+            ORDER BY b.date DESC
             LIMIT 1
         '''
         df_latest = pd.read_sql_query(query_latest, conn, params=(ticker,))
@@ -329,6 +378,8 @@ def get_bandarologi_data(ticker: str):
                 "acum_ratio": 0.0,
                 "acum_status": "Neutral",
                 "acum_score": 50.0,
+                "total_value": 0.0,
+                "foreign_ratio": 0.0,
                 "history": []
             }
             
@@ -349,13 +400,19 @@ def get_bandarologi_data(ticker: str):
         df_history['date'] = pd.to_datetime(df_history['date']).dt.strftime('%Y-%m-%d')
         history_list = df_history.to_dict(orient="records")
         
+        total_val = float(latest_rec['total_value'] or 0)
+        net_foreign_val = float(latest_rec['net_foreign_value'] or 0)
+        foreign_ratio = (net_foreign_val / total_val) if total_val > 0 else 0.0
+        
         return sanitize_json_data({
             "top_buyers": top_buyers,
             "top_sellers": top_sellers,
-            "net_foreign_value": float(latest_rec['net_foreign_value'] or 0),
+            "net_foreign_value": net_foreign_val,
             "acum_ratio": float(latest_rec['acum_ratio'] or 0),
             "acum_status": str(latest_rec['acum_status'] or "Neutral"),
             "acum_score": float(latest_rec['acum_score'] or 50.0),
+            "total_value": total_val,
+            "foreign_ratio": foreign_ratio,
             "history": history_list
         })
     finally:
@@ -494,13 +551,202 @@ def get_chart_data(ticker: str):
         conn.close()
 
 @app.get("/api/backtest")
-def run_backtest_api(days: int = 100, capital: float = 100000000.0, strategy: str = "T1_top5", sl: float = 5.0, tp: float = 10.0, max_positions: int = 5):
+def run_backtest_api(days: int = 100, capital: float = 100000000.0, strategy: str = "T1_top5", sl: float = 5.0, tp: float = 10.0, max_positions: int = 5, min_liquidity: float = 1000000000.0):
     try:
         from backtest_engine import run_backtest
-        result = run_backtest(days_back=days, initial_capital=capital, strategy=strategy, stop_loss_pct=sl, take_profit_pct=tp, max_positions=max_positions)
+        result = run_backtest(days_back=days, initial_capital=capital, strategy=strategy, stop_loss_pct=sl, take_profit_pct=tp, max_positions=max_positions, min_liquidity=min_liquidity)
         return sanitize_json_data(result)
     except Exception as e:
         return {"error": str(e)}
+
+# --- Adaptive AI Endpoints ---
+@app.get("/api/predictions/adaptive")
+def get_adaptive_predictions(min_liquidity: float = 1000000000.0):
+    csv_path = os.path.join(DATA_DIR, 'daily_ranking_adaptive.csv')
+    if not os.path.exists(csv_path):
+        return {"data": []}
+    
+    df = pd.read_csv(csv_path)
+    effective_liquidity = min_liquidity
+    if 'value' in df.columns:
+        df = df[df['value'] >= effective_liquidity]
+    df = df.replace([float('inf'), float('-inf')], None).fillna('')
+    data = df.to_dict(orient="records")
+    
+    # Inject latest Bandarologi accumulation status
+    import sqlite3
+    db_path = os.path.join(DATA_DIR, '..', 'alphahunter.db')
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
+        try:
+            query = '''
+                SELECT ticker, acum_status, acum_score, net_foreign_value
+                FROM broker_summaries
+                WHERE (ticker, date) IN (
+                    SELECT ticker, MAX(date)
+                    FROM broker_summaries
+                    GROUP BY ticker
+                )
+            '''
+            df_bs = pd.read_sql_query(query, conn)
+            status_map = {row['ticker']: (row['acum_status'], row['acum_score'], row['net_foreign_value']) for _, row in df_bs.iterrows()}
+            
+            for record in data:
+                ticker_val = record.get("Ticker") or record.get("ticker")
+                if ticker_val:
+                    acum_status, acum_score, net_foreign = status_map.get(ticker_val, ("Neutral", 50.0, 0.0))
+                    record["bandarologi_status"] = acum_status
+                    record["bandarologi_score"] = acum_score
+                    record["net_foreign_value"] = net_foreign
+        except Exception as e:
+            print("Error injecting bandarologi in adaptive predictions:", e)
+        finally:
+            conn.close()
+            
+    return {"data": sanitize_json_data(data)}
+
+
+@app.get("/api/predictions/adaptive/tech")
+def get_adaptive_technical_predictions(min_liquidity: float = 1000000000.0):
+    csv_path = os.path.join(DATA_DIR, 'daily_ranking_tech_adaptive.csv')
+    if not os.path.exists(csv_path):
+        return {"data": []}
+    
+    df = pd.read_csv(csv_path)
+    effective_liquidity = min_liquidity
+    if 'value' in df.columns:
+        df = df[df['value'] >= effective_liquidity]
+    df = df.replace([float('inf'), float('-inf')], None).fillna('')
+    data = df.to_dict(orient="records")
+    
+    # Inject latest Bandarologi accumulation status
+    import sqlite3
+    db_path = os.path.join(DATA_DIR, '..', 'alphahunter.db')
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
+        try:
+            query = '''
+                SELECT ticker, acum_status, acum_score, net_foreign_value
+                FROM broker_summaries
+                WHERE (ticker, date) IN (
+                    SELECT ticker, MAX(date)
+                    FROM broker_summaries
+                    GROUP BY ticker
+                )
+            '''
+            df_bs = pd.read_sql_query(query, conn)
+            status_map = {row['ticker']: (row['acum_status'], row['acum_score'], row['net_foreign_value']) for _, row in df_bs.iterrows()}
+            
+            for record in data:
+                ticker_val = record.get("Ticker") or record.get("ticker")
+                if ticker_val:
+                    acum_status, acum_score, net_foreign = status_map.get(ticker_val, ("Neutral", 50.0, 0.0))
+                    record["bandarologi_status"] = acum_status
+                    record["bandarologi_score"] = acum_score
+                    record["net_foreign_value"] = net_foreign
+        except Exception as e:
+            print("Error injecting bandarologi in adaptive tech predictions:", e)
+        finally:
+            conn.close()
+            
+    return {"data": sanitize_json_data(data)}
+
+
+@app.get("/api/backtest/adaptive")
+def run_backtest_adaptive_api(days: int = 100, capital: float = 100000000.0, strategy: str = "T1_top5", sl: float = 5.0, tp: float = 10.0, max_positions: int = 5, min_liquidity: float = 1000000000.0, dynamic_sizing: bool = False, prob_threshold: float = 0.0):
+    try:
+        from backtest_engine_adaptive import run_backtest_adaptive
+        result = run_backtest_adaptive(
+            days_back=days,
+            initial_capital=capital,
+            strategy=strategy,
+            stop_loss_pct=sl,
+            take_profit_pct=tp,
+            max_positions=max_positions,
+            min_liquidity=min_liquidity,
+            dynamic_sizing=dynamic_sizing,
+            prob_threshold=prob_threshold
+        )
+        return sanitize_json_data(result)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/regime/latest")
+def get_latest_regime():
+    try:
+        import sqlite3
+        import numpy as np
+        db_path = os.path.join(DATA_DIR, '..', 'alphahunter.db')
+        if not os.path.exists(db_path):
+            return {"regime": "Unknown", "ihsg_trend": 1.0, "market_breadth": 50.0, "ihsg_volatility": 1.0}
+            
+        conn = sqlite3.connect(db_path)
+        max_date_row = conn.execute("SELECT MAX(date) FROM daily_ohlcv").fetchone()
+        if not max_date_row or not max_date_row[0]:
+            conn.close()
+            return {"regime": "Unknown", "ihsg_trend": 1.0, "market_breadth": 50.0, "ihsg_volatility": 1.0}
+            
+        latest_date = max_date_row[0]
+        
+        query_breadth = '''
+            SELECT o.close, f.sma_20 
+            FROM daily_ohlcv o
+            INNER JOIN technical_features f ON o.ticker = f.ticker AND o.date = f.date
+            WHERE o.date = ? AND o.volume > 0
+        '''
+        df_breadth = pd.read_sql_query(query_breadth, conn, params=(latest_date,))
+        conn.close()
+        
+        if not df_breadth.empty:
+            above_sma20 = np.where(
+                (df_breadth['sma_20'] > 0) & (df_breadth['close'] > df_breadth['sma_20']),
+                1.0, 0.0
+            ).mean() * 100.0
+            market_breadth = float(above_sma20)
+        else:
+            market_breadth = 50.0
+            
+        from app.services.yfinance_client import yfinance_client
+        from datetime import datetime, timedelta
+        end_fetch_str = latest_date
+        start_fetch_dt = datetime.strptime(latest_date, '%Y-%m-%d') - timedelta(days=150)
+        start_fetch_str = start_fetch_dt.strftime('%Y-%m-%d')
+        
+        df_ihsg = yfinance_client.fetch_historical_data('^JKSE', start_fetch_str, end_fetch_str)
+        if df_ihsg.empty:
+            ihsg_trend = 1.0
+            ihsg_vol = 1.0
+        else:
+            df_ihsg['Close'] = pd.to_numeric(df_ihsg['Close'])
+            df_ihsg['ihsg_sma50'] = df_ihsg['Close'].rolling(50).mean()
+            df_ihsg['ihsg_trend'] = np.where(df_ihsg['Close'] > df_ihsg['ihsg_sma50'], 1.0, 0.0)
+            df_ihsg['ihsg_return'] = df_ihsg['Close'].pct_change() * 100.0
+            df_ihsg['ihsg_volatility'] = df_ihsg['ihsg_return'].rolling(14).std().fillna(1.0)
+            
+            latest_row = df_ihsg.iloc[-1]
+            ihsg_trend = float(latest_row['ihsg_trend'])
+            ihsg_vol = float(latest_row['ihsg_volatility'])
+            
+        if ihsg_trend == 0.0 and market_breadth < 35.0:
+            regime = "Bear Market / Extreme Fear"
+        elif ihsg_trend == 0.0:
+            regime = "Correction / Risk-Off"
+        elif market_breadth > 65.0:
+            regime = "Bull Market / Risk-On"
+        else:
+            regime = "Sideways / Normal"
+            
+        return {
+            "date": latest_date,
+            "regime": regime,
+            "ihsg_trend": ihsg_trend,
+            "market_breadth": round(market_breadth, 2),
+            "ihsg_volatility": round(ihsg_vol, 4)
+        }
+    except Exception as e:
+        print("Error in get_latest_regime API:", e)
+        return {"regime": "Error", "ihsg_trend": 1.0, "market_breadth": 50.0, "ihsg_volatility": 1.0, "detail": str(e)}
 
 # --- Watchlist API ---
 @app.get("/api/watchlists")

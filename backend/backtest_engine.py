@@ -12,10 +12,25 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 MODEL_T1_PATH = os.path.join(DATA_DIR, 'xgb_model_t1.joblib')
 MODEL_T3_PATH = os.path.join(DATA_DIR, 'xgb_model_t3.joblib')
+MODEL_LGBM_T1_PATH = os.path.join(DATA_DIR, 'lgbm_model_t1.joblib')
+MODEL_LGBM_T3_PATH = os.path.join(DATA_DIR, 'lgbm_model_t3.joblib')
+MODEL_CAT_T1_PATH = os.path.join(DATA_DIR, 'cat_model_t1.joblib')
+MODEL_CAT_T3_PATH = os.path.join(DATA_DIR, 'cat_model_t3.joblib')
+ENSEMBLE_WEIGHTS_PATH = os.path.join(DATA_DIR, 'ensemble_weights.joblib')
 FEATURES_LIST_PATH = os.path.join(DATA_DIR, 'features_list.joblib')
+
+# In-memory benchmark cache
+_benchmark_cache = {}
 
 def get_benchmark_curve(start_date_str, end_date_str, initial_capital, cron_dates):
     """Fetches IHSG (^JKSE) historical index data and maps it to a baseline index."""
+    cache_key = (start_date_str, end_date_str, initial_capital)
+    if cache_key in _benchmark_cache:
+        # Verify that length matches (if cron_dates length matches, cache is valid)
+        if len(_benchmark_cache[cache_key]) == len(cron_dates):
+            print("[Backtest] Using cached benchmark curve.")
+            return _benchmark_cache[cache_key]
+            
     try:
         from app.services.yfinance_client import yfinance_client
         df_ihsg = yfinance_client.fetch_historical_data('^JKSE', start_date_str, end_date_str)
@@ -50,57 +65,53 @@ def get_benchmark_curve(start_date_str, end_date_str, initial_capital, cron_date
             indexed_val = initial_capital * (close_val / first_val)
             benchmark_curve.append({"time": dt, "value": round(float(indexed_val), 2)})
             
+        _benchmark_cache[cache_key] = benchmark_curve
         return benchmark_curve
     except Exception as e:
         print(f"[Backtest] Error fetching benchmark index: {e}")
         return [{"time": dt, "value": initial_capital} for dt in cron_dates]
 
-def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5', stop_loss_pct=5.0, take_profit_pct=10.0, max_positions=5):
+def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5', stop_loss_pct=5.0, take_profit_pct=10.0, max_positions=5, min_liquidity=1000000000.0):
     """
     Simulates portfolio trading using predictions.
     Supports SL/TP, custom capital, and different model strategies.
     """
-    # Load model configuration
-    if strategy == 'T1_top5' or strategy == 'T1_blended_top5':
-        model_path = MODEL_T1_PATH
-        holding_days = 1
-    elif strategy == 'T3_top5':
-        model_path = MODEL_T3_PATH
-        holding_days = 3
-    else:
-        return {"error": f"Unknown strategy: {strategy}"}
-
-    if not os.path.exists(model_path) or not os.path.exists(FEATURES_LIST_PATH):
-        return {"error": "Model files or features list not found. Run training first."}
-        
-    model = joblib.load(model_path)
-    features_list = joblib.load(FEATURES_LIST_PATH)
+    from app.services import dataset_cache
     
-    dataset_path = os.path.join(DATA_DIR, 'ml_dataset.csv')
-    if not os.path.exists(dataset_path):
-        return {"error": "ML dataset file not found."}
+    if dataset_cache.is_loaded():
+        print("[Backtest] Using in-memory cached dataset.")
+        df = dataset_cache.get_df()
+        prices_lookup = dataset_cache.get_prices_lookup()
+        features_list = dataset_cache.get_features_list()
+        if strategy == 'T1_top5' or strategy == 'T1_blended_top5':
+            model = dataset_cache.get_model_t1()
+            holding_days = 1
+        else:
+            model = dataset_cache.get_model_t3()
+            holding_days = 3
+    else:
+        print("[Backtest] Cache not loaded. Loading from disk...")
+        if strategy == 'T1_top5' or strategy == 'T1_blended_top5':
+            holding_days = 1
+            model_path = MODEL_T1_PATH
+        else:
+            holding_days = 3
+            model_path = MODEL_T3_PATH
+            
+        if not os.path.exists(model_path) or not os.path.exists(FEATURES_LIST_PATH):
+            return {"error": "Model files or features list not found. Run training first."}
+            
+        model = joblib.load(model_path)
+        features_list = joblib.load(FEATURES_LIST_PATH)
         
-    try:
-        # Load and sort data
+        dataset_path = os.path.join(DATA_DIR, 'ml_dataset.csv')
+        if not os.path.exists(dataset_path):
+            return {"error": "ML dataset file not found."}
+            
         df = pd.read_csv(dataset_path)
         df['date'] = pd.to_datetime(df['date'])
         df.sort_values(by=['date', 'ticker'], inplace=True)
         df.reset_index(drop=True, inplace=True)
-        
-        all_dates = sorted(df['date'].unique())
-        if len(all_dates) < days_back:
-            days_back = len(all_dates)
-            
-        # Get simulated date range
-        test_dates = all_dates[-days_back:]
-        start_date = test_dates[0]
-        end_date = test_dates[-1]
-        
-        start_date_str = start_date.strftime('%Y-%m-%d')
-        end_date_str = end_date.strftime('%Y-%m-%d')
-        cron_dates = [d.strftime('%Y-%m-%d') for d in test_dates]
-        
-        print(f"[Backtest] Simulating {strategy} from {start_date_str} to {end_date_str} ({days_back} days)...")
         
         # Load prices lookup dictionary for extremely fast daily checks
         prices_df = df[['ticker', 'date', 'open', 'high', 'low', 'close']].copy()
@@ -117,9 +128,39 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                 "close": float(row.close)
             }
             
-        # Run ML predictions for test dates
-        df_test = df[df['date'].isin(test_dates)].copy()
+    try:
+        if dataset_cache.is_loaded():
+            all_dates = dataset_cache.get_all_dates()
+        else:
+            all_dates = sorted(df['date'].unique())
+            
+        if len(all_dates) < days_back:
+            days_back = len(all_dates)
+            
+        # Get simulated date range
+        test_dates = all_dates[-days_back:]
+        start_date = test_dates[0]
+        end_date = test_dates[-1]
+        
+        start_date_str = start_date.strftime('%Y-%m-%d') if hasattr(start_date, 'strftime') else str(start_date)
+        end_date_str = end_date.strftime('%Y-%m-%d') if hasattr(end_date, 'strftime') else str(end_date)
+        
+        start_dt = pd.Timestamp(start_date)
+        end_dt = pd.Timestamp(end_date)
+        
+        cron_dates = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in test_dates]
+        
+        print(f"[Backtest] Simulating {strategy} from {start_date_str} to {end_date_str} ({days_back} days)...")
+            
+        # Run ML predictions for test dates (O(log N) binary search range slicing)
+        start_idx = df['date'].searchsorted(start_dt)
+        end_idx = df['date'].searchsorted(end_dt + pd.Timedelta(days=1))
+        df_test = df.iloc[start_idx:end_idx].copy()
         df_test = df_test.dropna(subset=features_list)
+        
+        # Apply liquidity filter (minimum Rp 1 Billion is mandatory)
+        effective_liquidity = min_liquidity
+        df_test = df_test[df_test['value'] >= effective_liquidity].copy()
         
         # No oversold filter needed anymore
             
@@ -158,7 +199,43 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
             return {"error": "No data matching strategy conditions after applying filters."}
             
         X = df_test[features_list].values
-        probs_tech = model.predict_proba(X)[:, 1]
+        
+        # Check and use ensemble if available
+        use_ensemble = False
+        if strategy == 'T1_top5' or strategy == 'T1_blended_top5':
+            model_xgb_path = MODEL_T1_PATH
+            model_lgbm_path = MODEL_LGBM_T1_PATH
+            model_cat_path = MODEL_CAT_T1_PATH
+            horizon_key = 'T+1'
+        else:
+            model_xgb_path = MODEL_T3_PATH
+            model_lgbm_path = MODEL_LGBM_T3_PATH
+            model_cat_path = MODEL_CAT_T3_PATH
+            horizon_key = 'T+3'
+            
+        if os.path.exists(model_xgb_path) and os.path.exists(model_lgbm_path) and os.path.exists(model_cat_path):
+            try:
+                model_xgb = joblib.load(model_xgb_path)
+                model_lgbm = joblib.load(model_lgbm_path)
+                model_cat = joblib.load(model_cat_path)
+                
+                w_xgb, w_lgbm, w_cat = 0.40, 0.35, 0.25
+                if os.path.exists(ENSEMBLE_WEIGHTS_PATH):
+                    weights = joblib.load(ENSEMBLE_WEIGHTS_PATH)
+                    w_xgb = weights.get(horizon_key, {}).get('xgb', 0.40)
+                    w_lgbm = weights.get(horizon_key, {}).get('lgbm', 0.35)
+                    w_cat = weights.get(horizon_key, {}).get('cat', 0.25)
+                    
+                prob_xgb = model_xgb.predict_proba(X)[:, 1]
+                prob_lgbm = model_lgbm.predict_proba(X)[:, 1]
+                prob_cat = model_cat.predict_proba(X)[:, 1]
+                probs_tech = w_xgb * prob_xgb + w_lgbm * prob_lgbm + w_cat * prob_cat
+                use_ensemble = True
+            except Exception as e_load:
+                print(f"[Backtest] Failed to load ensemble, fallback to single: {e_load}")
+                
+        if not use_ensemble:
+            probs_tech = model.predict_proba(X)[:, 1]
         
         if strategy == 'T1_blended_top5':
             acum_score_val = df_test['acum_score'].values
@@ -166,15 +243,23 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
         else:
             df_test['prob_up'] = probs_tech
         
-        # Group candidates by date
+        # Group candidates by date (optimized to avoid pandas groupby/itertuples/to_dict overhead)
+        df_test_small = df_test[['ticker', 'date_str', 'prob_up', 'close']].sort_values(by='prob_up', ascending=False)
+        tickers = df_test_small['ticker'].tolist()
+        date_strs = df_test_small['date_str'].tolist()
+        prob_ups = df_test_small['prob_up'].tolist()
+        closes = df_test_small['close'].tolist()
+        
         candidates_by_date = {}
-        for date_str, group in df_test.groupby('date_str'):
-            # Rank candidates
-            sorted_group = group.sort_values(by='prob_up', ascending=False)
-            candidates_by_date[date_str] = [
-                {"ticker": r.ticker, "prob_up": float(r.prob_up), "close": float(r.close)}
-                for r in sorted_group.itertuples()
-            ]
+        for i in range(len(tickers)):
+            d = date_strs[i]
+            if d not in candidates_by_date:
+                candidates_by_date[d] = []
+            candidates_by_date[d].append({
+                "ticker": tickers[i],
+                "prob_up": float(prob_ups[i]),
+                "close": float(closes[i])
+            })
             
         # Initialize portfolio state
         cash = initial_capital
@@ -184,9 +269,27 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
         active_trades = []  # list of open positions
         
         for today_str in cron_dates:
+            # Check if today_str is today's date and the market is still open/not fully closed
+            from datetime import datetime, timezone, timedelta
+            tz_wib = timezone(timedelta(hours=7))
+            now_wib = datetime.now(timezone.utc).astimezone(tz_wib)
+            today_wib_str = now_wib.strftime('%Y-%m-%d')
+            
+            is_today_incomplete = False
+            if today_str == today_wib_str:
+                if now_wib.hour < 16 or (now_wib.hour == 16 and now_wib.minute < 15):
+                    is_today_incomplete = True
+
             # 1. Update Open Positions & Check Exits (SL, TP, holding period)
             still_active = []
             for t in active_trades:
+                if is_today_incomplete:
+                    today_prices = prices_lookup.get(t["ticker"], {}).get(today_str)
+                    if today_prices:
+                        t["last_close"] = today_prices["close"]
+                    still_active.append(t)
+                    continue
+
                 t["days_held"] += 1
                 ticker = t["ticker"]
                 shares = t["shares"]
@@ -195,8 +298,27 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                 # Check price on this trading day
                 today_prices = prices_lookup.get(ticker, {}).get(today_str)
                 if not today_prices:
-                    # Stock suspended or data missing, keep holding
-                    still_active.append(t)
+                    # If stock is suspended or data missing, check if holding period expired
+                    if t["days_held"] >= holding_days:
+                        # Force close at last known close price
+                        exit_price = t["last_close"]
+                        exit_value = shares * exit_price
+                        cash += exit_value
+                        entry_value = shares * buy_price
+                        profit_nominal = exit_value - entry_value
+                        trades_log.append({
+                            "ticker": ticker,
+                            "entry_date": t["entry_date"],
+                            "exit_date": today_str,
+                            "entry_price": round(buy_price, 2),
+                            "exit_price": round(exit_price, 2),
+                            "return_pct": round((exit_price / buy_price - 1) * 100, 2),
+                            "profit_nominal": round(profit_nominal, 2),
+                            "status": "SUSPENDED_FORCE_CLOSE",
+                            "days_held": t["days_held"]
+                        })
+                    else:
+                        still_active.append(t)
                     continue
                     
                 low_p = today_prices["low"]
@@ -204,6 +326,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                 close_p = today_prices["close"]
                 open_p = today_prices["open"]
                 
+                t["last_close"] = close_p
                 sl_price = t["sl_price"]
                 tp_price = t["tp_price"]
                 
@@ -274,13 +397,15 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
             for t in active_trades:
                 ticker = t["ticker"]
                 today_prices = prices_lookup.get(ticker, {}).get(today_str)
-                current_price = today_prices["close"] if today_prices else t["entry_price"]
+                current_price = today_prices["close"] if today_prices else t.get("last_close", t["entry_price"])
                 holdings_value += t["shares"] * current_price
                 
             portfolio_value = cash + holdings_value
             equity_curve.append({"time": today_str, "value": round(portfolio_value, 2)})
             
             # 2. Enter New Trades
+            if is_today_incomplete:
+                continue
             slots_available = max_positions - len(active_trades)
             if slots_available > 0 and today_str in candidates_by_date:
                 candidates = candidates_by_date[today_str]
@@ -320,6 +445,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
                             "entry_price": buy_price,
                             "shares": shares,
                             "days_held": 0,
+                            "last_close": buy_price,
                             "sl_price": sl_price,
                             "tp_price": tp_price
                         })
@@ -329,7 +455,7 @@ def run_backtest(days_back=100, initial_capital=100000000.0, strategy='T1_top5',
         for t in active_trades:
             ticker = t["ticker"]
             today_prices = prices_lookup.get(ticker, {}).get(final_date)
-            exit_price = today_prices["close"] if today_prices else t["entry_price"]
+            exit_price = today_prices["close"] if today_prices else t.get("last_close", t["entry_price"])
             exit_value = t["shares"] * exit_price
             entry_value = t["shares"] * t["entry_price"]
             profit_nominal = exit_value - entry_value

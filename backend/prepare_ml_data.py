@@ -77,8 +77,8 @@ def prepare_ml_data():
         print("Calculating Target T+1 and T+3...")
         df_merged['next_close'] = df_merged.groupby('ticker')['close'].shift(-1)
         df_merged['close_t3'] = df_merged.groupby('ticker')['close'].shift(-3)
-        df_merged['target_1d_up'] = np.where(df_merged['next_close'].isna(), np.nan, (df_merged['next_close'] > df_merged['close']).astype(float))
-        df_merged['target_3d_up'] = np.where(df_merged['close_t3'].isna(), np.nan, (df_merged['close_t3'] > df_merged['close']).astype(float))
+        df_merged['target_1d_up'] = np.where(df_merged['next_close'].isna(), np.nan, (df_merged['next_close'] > df_merged['close'] * 1.01).astype(float))
+        df_merged['target_3d_up'] = np.where(df_merged['close_t3'].isna(), np.nan, (df_merged['close_t3'] > df_merged['close'] * 1.01).astype(float))
 
         # ── FIX 3: Survivorship label correction ────────────────────
         # Untuk saham yang sudah tidak aktif (suspend/delisting),
@@ -160,6 +160,70 @@ def prepare_ml_data():
         )
 
         print(f"  Added features: return_1d, close_vs_sma20_pct, volume_ratio, rsi_relative, is_active")
+
+        # 4f. Multi-timeframe returns
+        df_final['return_5d'] = df_final.groupby('ticker')['close'].pct_change(5) * 100
+        df_final['return_10d'] = df_final.groupby('ticker')['close'].pct_change(10) * 100
+        df_final['return_20d'] = df_final.groupby('ticker')['close'].pct_change(20) * 100
+
+        # 4g. Bollinger Band %B (position within bands)
+        df_final['bb_pct_b'] = np.where(
+            (df_final['bb_upper'] - df_final['bb_lower']) > 0,
+            (df_final['close'] - df_final['bb_lower']) / (df_final['bb_upper'] - df_final['bb_lower']),
+            0.5
+        )
+
+        # 4h. MACD histogram momentum (change in histogram)
+        df_final['macd_hist_change'] = df_final.groupby('ticker')['macd_histogram'].diff()
+
+        # 4i. Volume surge 5-day (today vs 5-day avg)
+        vol_5d_avg = df_final.groupby('ticker')['volume'].transform(
+            lambda x: x.rolling(5, min_periods=1).mean()
+        )
+        df_final['volume_surge_5d'] = np.where(vol_5d_avg > 0, df_final['volume'] / vol_5d_avg, 1.0)
+
+        # 4j. Gap analysis (open vs prev close)
+        prev_close_gap = df_final.groupby('ticker')['close'].shift(1)
+        df_final['gap_pct'] = np.where(
+            prev_close_gap > 0,
+            (df_final['open'] / prev_close_gap - 1) * 100,
+            0.0
+        )
+
+        # 4k. Candle body ratio and shadow ratios
+        total_range = df_final['high'] - df_final['low']
+        df_final['body_ratio'] = np.where(
+            total_range > 0,
+            abs(df_final['close'] - df_final['open']) / total_range,
+            0.0
+        )
+        df_final['upper_shadow_ratio'] = np.where(
+            total_range > 0,
+            (df_final['high'] - np.maximum(df_final['close'], df_final['open'])) / total_range,
+            0.0
+        )
+
+        # 4l. ATR percentage (volatility normalized by price)
+        df_final['atr_pct'] = np.where(
+            df_final['close'] > 0,
+            (df_final['atr_14'] / df_final['close']) * 100,
+            0.0
+        )
+
+        # 4m. Bullish divergence signal (price down but RSI up over 5 days)
+        price_chg_5d = df_final.groupby('ticker')['close'].pct_change(5)
+        rsi_chg_5d = df_final.groupby('ticker')['rsi_14'].diff(5)
+        df_final['bullish_divergence'] = np.where(
+            (price_chg_5d < -0.02) & (rsi_chg_5d > 2), 1.0, 0.0
+        )
+
+        # 4n. Temporal / calendar features
+        df_final['day_of_week'] = df_final['date'].dt.dayofweek  # 0=Mon, 4=Fri
+        df_final['month'] = df_final['date'].dt.month
+        df_final['is_month_end'] = df_final['date'].dt.is_month_end.astype(float)
+        df_final['is_quarter_end'] = df_final['month'].isin([3, 6, 9, 12]).astype(float)
+
+        print(f"  Added enhanced features: multi-TF returns, BB%B, MACD momentum, volume surge, gap, candle ratios, divergence, temporal")
         # ─────────────────────────────────────────────────────────────
 
         # ─────────────────────────────────────────────────────────────

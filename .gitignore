@@ -38,3 +38,15 @@ backend/data/status.json
 task.md
 backend/output_test.txt
 backend/test_*.py
+scratch/
+backend/scratch/
+
+# Temporary database and run files
+*.db-shm
+*.db-wal
+*.db.bak
+backend/data/pipeline.pid
+
+# CatBoost training logs
+catboost_info/
+backend/catboost_info/

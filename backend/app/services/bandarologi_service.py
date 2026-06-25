@@ -71,7 +71,20 @@ def calculate_broker_summaries(db: Session, limit_days: int = 15):
             combined_metric = change_pct + noise
             
             # Classify accumulation status
-            if combined_metric >= 0.04:
+            # Check for Hidden Accumulation / Hidden Distribution first
+            hidden_trigger = get_deterministic_value(f"{seed}_hidden_trigger", 0.0, 100.0)
+            
+            if abs(change_pct) <= 0.01 and hidden_trigger >= 90.0:
+                # 10% chance on flat price days
+                status = "Hidden Accumulation"
+                acum_ratio = get_deterministic_value(f"{seed}_ratio", 0.25, 0.50)
+                acum_score = get_deterministic_value(f"{seed}_score", 65.0, 89.0)
+            elif change_pct >= 0.02 and hidden_trigger >= 90.0:
+                # 10% chance on pumped price days
+                status = "Hidden Distribution"
+                acum_ratio = get_deterministic_value(f"{seed}_ratio", -0.50, -0.25)
+                acum_score = get_deterministic_value(f"{seed}_score", 15.0, 45.0)
+            elif combined_metric >= 0.04:
                 status = "Big Accumulation"
                 acum_ratio = get_deterministic_value(f"{seed}_ratio", 0.40, 0.65)
                 acum_score = get_deterministic_value(f"{seed}_score", 85.0, 99.0)

@@ -1137,3 +1137,17 @@ h1 {
   border: 1px solid rgba(255, 42, 42, 0.3);
   box-shadow: 0 0 8px rgba(255, 42, 42, 0.15);
 }
+
+.status-hidden-accumulation {
+  background: rgba(234, 179, 8, 0.12);
+  color: #eab308;
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  box-shadow: 0 0 8px rgba(234, 179, 8, 0.15);
+}
+
+.status-hidden-distribution {
+  background: rgba(249, 115, 22, 0.12);
+  color: #f97316;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  box-shadow: 0 0 8px rgba(249, 115, 22, 0.15);
+}

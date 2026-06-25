@@ -16,6 +16,13 @@ MODEL_T3_PATH = os.path.join(DATA_DIR, 'xgb_model_t3.joblib')
 FEATURES_LIST_PATH = os.path.join(DATA_DIR, 'features_list.joblib')
 OUTPUT_PATH = os.path.join(DATA_DIR, 'daily_ranking.csv')
 
+# Ensemble model paths
+MODEL_LGBM_T1_PATH = os.path.join(DATA_DIR, 'lgbm_model_t1.joblib')
+MODEL_LGBM_T3_PATH = os.path.join(DATA_DIR, 'lgbm_model_t3.joblib')
+MODEL_CAT_T1_PATH = os.path.join(DATA_DIR, 'cat_model_t1.joblib')
+MODEL_CAT_T3_PATH = os.path.join(DATA_DIR, 'cat_model_t3.joblib')
+ENSEMBLE_WEIGHTS_PATH = os.path.join(DATA_DIR, 'ensemble_weights.joblib')
+
 def update_pipeline_status(message, progress, is_running=True):
     import json
     status_file = os.path.join(DATA_DIR, 'status.json')
@@ -36,11 +43,27 @@ def predict_tomorrow():
         update_pipeline_status("Model files not found. Run training first.", 0, False)
         return
         
-    print("Loading XGBoost Models (T+1 and T+3)...")
+    print("Loading Ensemble Models (XGBoost + LightGBM + CatBoost)...")
     update_pipeline_status("AI is generating Top 10 Predictions...", 80)
-    model_t1 = joblib.load(MODEL_T1_PATH)
-    model_t3 = joblib.load(MODEL_T3_PATH)
+    model_xgb_t1 = joblib.load(MODEL_T1_PATH)
+    model_xgb_t3 = joblib.load(MODEL_T3_PATH)
     features_list = joblib.load(FEATURES_LIST_PATH)
+    
+    # Load ensemble models (graceful fallback to XGBoost-only if not available)
+    use_ensemble = True
+    try:
+        model_lgbm_t1 = joblib.load(MODEL_LGBM_T1_PATH)
+        model_lgbm_t3 = joblib.load(MODEL_LGBM_T3_PATH)
+        model_cat_t1 = joblib.load(MODEL_CAT_T1_PATH)
+        model_cat_t3 = joblib.load(MODEL_CAT_T3_PATH)
+        ensemble_weights = joblib.load(ENSEMBLE_WEIGHTS_PATH)
+        w_xgb = ensemble_weights.get('T+1', {}).get('xgb', 0.40)
+        w_lgbm = ensemble_weights.get('T+1', {}).get('lgbm', 0.35)
+        w_cat = ensemble_weights.get('T+1', {}).get('cat', 0.25)
+        print(f"Ensemble loaded: XGBoost({w_xgb}) + LightGBM({w_lgbm}) + CatBoost({w_cat})")
+    except Exception as e:
+        print(f"Ensemble models not found, falling back to XGBoost-only: {e}")
+        use_ensemble = False
     
     print("Connecting to database using sqlite3...")
     import sqlite3
@@ -51,19 +74,19 @@ def predict_tomorrow():
         # Load the latest date available in the database
         print("Fetching latest market data...")
         
-        # Optimized: only load last 30 days per ticker (not full table)
+        # Optimized: only load last 60 days per ticker (not full table) to support 20-day returns calculation without NaNs
         df_ohlcv = pd.read_sql_query('''
             SELECT o.ticker, o.date, o.open, o.high, o.low, o.close, o.volume, o.value
             FROM daily_ohlcv o
             INNER JOIN (
                 SELECT ticker, MAX(date) as max_date FROM daily_ohlcv GROUP BY ticker
-            ) m ON o.ticker = m.ticker AND o.date >= date(m.max_date, '-30 days')
+            ) m ON o.ticker = m.ticker AND o.date >= date(m.max_date, '-60 days')
         ''', conn)
         df_features = pd.read_sql_query('''
             SELECT f.* FROM technical_features f
             INNER JOIN (
                 SELECT ticker, MAX(date) as max_date FROM technical_features GROUP BY ticker
-            ) m ON f.ticker = m.ticker AND f.date >= date(m.max_date, '-30 days')
+            ) m ON f.ticker = m.ticker AND f.date >= date(m.max_date, '-60 days')
         ''', conn)
         
         df_broker = pd.read_sql_query('''
@@ -71,7 +94,7 @@ def predict_tomorrow():
             FROM broker_summaries b
             INNER JOIN (
                 SELECT ticker, MAX(date) as max_date FROM broker_summaries GROUP BY ticker
-            ) m ON b.ticker = m.ticker AND b.date >= date(m.max_date, '-30 days')
+            ) m ON b.ticker = m.ticker AND b.date >= date(m.max_date, '-60 days')
         ''', conn)
         
         if df_ohlcv.empty or df_features.empty:
@@ -127,6 +150,68 @@ def predict_tomorrow():
         # 5. is_active (inference stocks default to 1.0)
         df_merged['is_active'] = 1.0
 
+        # 6. Multi-timeframe returns
+        df_merged['return_5d'] = df_merged.groupby('ticker')['close'].pct_change(5) * 100
+        df_merged['return_10d'] = df_merged.groupby('ticker')['close'].pct_change(10) * 100
+        df_merged['return_20d'] = df_merged.groupby('ticker')['close'].pct_change(20) * 100
+
+        # 7. Bollinger Band %B
+        df_merged['bb_pct_b'] = np.where(
+            (df_merged['bb_upper'] - df_merged['bb_lower']) > 0,
+            (df_merged['close'] - df_merged['bb_lower']) / (df_merged['bb_upper'] - df_merged['bb_lower']),
+            0.5
+        )
+
+        # 8. MACD histogram momentum
+        df_merged['macd_hist_change'] = df_merged.groupby('ticker')['macd_histogram'].diff()
+
+        # 9. Volume surge 5-day
+        vol_5d_avg = df_merged.groupby('ticker')['volume'].transform(
+            lambda x: x.rolling(5, min_periods=1).mean()
+        )
+        df_merged['volume_surge_5d'] = np.where(vol_5d_avg > 0, df_merged['volume'] / vol_5d_avg, 1.0)
+
+        # 10. Gap analysis
+        prev_close_gap = df_merged.groupby('ticker')['close'].shift(1)
+        df_merged['gap_pct'] = np.where(
+            prev_close_gap > 0,
+            (df_merged['open'] / prev_close_gap - 1) * 100,
+            0.0
+        )
+
+        # 11. Candle body ratio and shadow ratios
+        total_range = df_merged['high'] - df_merged['low']
+        df_merged['body_ratio'] = np.where(
+            total_range > 0,
+            abs(df_merged['close'] - df_merged['open']) / total_range,
+            0.0
+        )
+        df_merged['upper_shadow_ratio'] = np.where(
+            total_range > 0,
+            (df_merged['high'] - np.maximum(df_merged['close'], df_merged['open'])) / total_range,
+            0.0
+        )
+
+        # 12. ATR percentage
+        df_merged['atr_pct'] = np.where(
+            df_merged['close'] > 0,
+            (df_merged['atr_14'] / df_merged['close']) * 100,
+            0.0
+        )
+
+        # 13. Bullish divergence signal
+        price_chg_5d = df_merged.groupby('ticker')['close'].pct_change(5)
+        rsi_chg_5d = df_merged.groupby('ticker')['rsi_14'].diff(5)
+        df_merged['bullish_divergence'] = np.where(
+            (price_chg_5d < -0.02) & (rsi_chg_5d > 2), 1.0, 0.0
+        )
+
+        # 14. Temporal features
+        df_merged['day_of_week'] = df_merged['date'].dt.dayofweek
+        df_merged['month'] = df_merged['date'].dt.month
+        df_merged['is_month_end'] = df_merged['date'].dt.is_month_end.astype(float)
+        df_merged['is_quarter_end'] = df_merged['month'].isin([3, 6, 9, 12]).astype(float)
+
         # Filter out suspended, delisted, or stale stocks that did not trade on the latest market date
         # or had 0 trading volume on the latest day.
         max_market_date = df_merged['date'].max()
@@ -142,9 +227,22 @@ def predict_tomorrow():
         # Ensure columns match exactly what the model expects
         X_latest = df_latest[features_list]
         
-        # Predict Probabilities
-        probs_t1 = model_t1.predict_proba(X_latest)[:, 1]
-        probs_t3 = model_t3.predict_proba(X_latest)[:, 1]
+        # Predict Probabilities (Ensemble or XGBoost-only)
+        if use_ensemble:
+            prob_xgb_t1 = model_xgb_t1.predict_proba(X_latest)[:, 1]
+            prob_lgbm_t1 = model_lgbm_t1.predict_proba(X_latest)[:, 1]
+            prob_cat_t1 = model_cat_t1.predict_proba(X_latest)[:, 1]
+            probs_t1 = w_xgb * prob_xgb_t1 + w_lgbm * prob_lgbm_t1 + w_cat * prob_cat_t1
+            
+            prob_xgb_t3 = model_xgb_t3.predict_proba(X_latest)[:, 1]
+            prob_lgbm_t3 = model_lgbm_t3.predict_proba(X_latest)[:, 1]
+            prob_cat_t3 = model_cat_t3.predict_proba(X_latest)[:, 1]
+            probs_t3 = w_xgb * prob_xgb_t3 + w_lgbm * prob_lgbm_t3 + w_cat * prob_cat_t3
+            print(f"Ensemble predictions generated for {len(X_latest)} stocks.")
+        else:
+            probs_t1 = model_xgb_t1.predict_proba(X_latest)[:, 1]
+            probs_t3 = model_xgb_t3.predict_proba(X_latest)[:, 1]
+            print(f"XGBoost-only predictions generated for {len(X_latest)} stocks.")
         
         # Blend ML probability with Bandarologi acum_score
         # formula: Blended_Score = 0.6 * Prob_ML + 0.4 * (acum_score / 100.0)
@@ -156,14 +254,14 @@ def predict_tomorrow():
         df_latest['prob_up_t3'] = probs_t3
         
         # Create ranking DataFrame for Blended
-        df_ranked = df_latest[['ticker', 'date', 'close', 'prob_up', 'prob_up_t3', 'patterns']].copy()
+        df_ranked = df_latest[['ticker', 'date', 'close', 'prob_up', 'prob_up_t3', 'patterns', 'value', 'net_foreign_value', 'acum_score', 'acum_status']].copy()
         df_ranked['prob_up_raw'] = df_ranked['prob_up']
         df_ranked['prob_up_t3_raw'] = df_ranked['prob_up_t3']
         df_ranked.sort_values(by='prob_up', ascending=False, inplace=True)
         df_ranked['rank'] = range(1, len(df_ranked) + 1)
         
         # Create ranking DataFrame for Pure Technical (no blending)
-        df_ranked_tech = df_latest[['ticker', 'date', 'close', 'patterns']].copy()
+        df_ranked_tech = df_latest[['ticker', 'date', 'close', 'patterns', 'value', 'net_foreign_value', 'acum_score', 'acum_status']].copy()
         df_ranked_tech['prob_up'] = probs_t1
         df_ranked_tech['prob_up_t3'] = probs_t3
         df_ranked_tech['prob_up_raw'] = probs_t1
@@ -186,15 +284,22 @@ def predict_tomorrow():
             last_date_dt = last_data_date
             
         now_local = dt.datetime.now()
-        if now_local.weekday() < 5 and now_local.hour < 16:
-            # Predict for today (T+0)
-            pred_date_str = last_date_dt.strftime('%Y-%m-%d')
-        else:
-            # Predict for next business day (T+1)
+        # If the latest data in the database is in the past (before today),
+        # then the prediction is for the next business day after that data date.
+        if last_date_dt < now_local.date():
             next_bd = last_date_dt + timedelta(days=1)
             while next_bd.weekday() >= 5:
                 next_bd += timedelta(days=1)
             pred_date_str = next_bd.strftime('%Y-%m-%d')
+        else:
+            # If the data date is today (or in the future), check the current time.
+            if now_local.hour < 16:
+                pred_date_str = last_date_dt.strftime('%Y-%m-%d')
+            else:
+                next_bd = last_date_dt + timedelta(days=1)
+                while next_bd.weekday() >= 5:
+                    next_bd += timedelta(days=1)
+                pred_date_str = next_bd.strftime('%Y-%m-%d')
             
         # Save predictions history for Learning Engine (using Blended)
         try:

@@ -56,6 +56,8 @@ def calculate_technical_features():
         raw_conn = _sqlite3.connect(
             os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphahunter.db')
         )
+        raw_conn.execute("PRAGMA journal_mode=WAL;")
+        raw_conn.execute("PRAGMA synchronous=NORMAL;")
         raw_cur = raw_conn.cursor()
         
         # Standardize dates to YYYY-MM-DD strings to ensure safe comparison across types
@@ -163,28 +165,50 @@ def calculate_technical_features():
             # Volume: SMA 20
             df['volume_sma_20'] = get_series(df.ta.sma(close=df['volume'], length=20))
             
+            # Money Flow Index (volume-weighted RSI)
+            df['mfi_14'] = get_series(df.ta.mfi(length=14))
+            
+            # Williams %R (momentum oscillator)
+            df['willr_14'] = get_series(df.ta.willr(length=14))
+            
+            # Commodity Channel Index
+            df['cci_20'] = get_series(df.ta.cci(length=20))
+            
             # --- Save to Database using INSERT OR IGNORE ---
             # Menggunakan raw SQL INSERT OR IGNORE agar tidak crash
             # saat ada duplikat (bisa terjadi jika script dijalankan ulang).
             # Ini jauh lebih robust daripada SQLAlchemy ORM add_all().
             max_feat_str = max_feat.strftime('%Y-%m-%d') if hasattr(max_feat, 'strftime') else str(max_feat) if max_feat else None
-            df_new = df[df['date'] > max_feat_str] if max_feat_str else df
+            df_new = df[df['date'] > max_feat_str].copy() if max_feat_str else df.copy()
 
             rows_to_insert = []
-            for _, row in df_new.iterrows():
-                r = row.where(pd.notnull(row), None)
-                date_val = r['date']
-                date_str = date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else str(date_val)
+            if not df_new.empty:
+                # Convert dates to string format in a vectorized way
+                if hasattr(df_new['date'], 'dt'):
+                    df_new['date_str'] = df_new['date'].dt.strftime('%Y-%m-%d')
+                else:
+                    df_new['date_str'] = df_new['date'].astype(str)
                 
-                rows_to_insert.append((
-                    ticker, date_str,
-                    r.get('sma_5'), r.get('sma_20'), r.get('sma_50'), r.get('sma_200'),
-                    r.get('rsi_7'), r.get('rsi_14'),
-                    r.get('stoch_k'), r.get('stoch_d'),
-                    r.get('macd'), r.get('macd_signal'), r.get('macd_histogram'),
-                    r.get('bb_upper'), r.get('bb_middle'), r.get('bb_lower'),
-                    r.get('atr_14'), r.get('adx_14'), r.get('obv'), r.get('volume_sma_20')
-                ))
+                # Replace NaN with None for SQLite insertion compatibility
+                cols_to_extract = [
+                    'date_str', 'sma_5', 'sma_20', 'sma_50', 'sma_200',
+                    'rsi_7', 'rsi_14', 'stoch_k', 'stoch_d',
+                    'macd', 'macd_signal', 'macd_histogram',
+                    'bb_upper', 'bb_middle', 'bb_lower',
+                    'atr_14', 'adx_14', 'obv', 'volume_sma_20',
+                    'mfi_14', 'willr_14', 'cci_20'
+                ]
+                
+                # Ensure all cols exist in df_new
+                for col in cols_to_extract:
+                    if col not in df_new.columns:
+                        df_new[col] = None
+                        
+                df_to_insert = df_new[cols_to_extract].copy()
+                df_to_insert = df_to_insert.where(pd.notnull(df_to_insert), None)
+                
+                records = df_to_insert.values.tolist()
+                rows_to_insert = [(ticker, *rec) for rec in records]
             
             if rows_to_insert:
                 raw_cur.executemany(
@@ -193,8 +217,9 @@ def calculate_technical_features():
                         rsi_7, rsi_14, stoch_k, stoch_d,
                         macd, macd_signal, macd_histogram,
                         bb_upper, bb_middle, bb_lower,
-                        atr_14, adx_14, obv, volume_sma_20)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        atr_14, adx_14, obv, volume_sma_20,
+                        mfi_14, willr_14, cci_20)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     rows_to_insert
                 )
                 # Commit in batches of 50 to keep it fast

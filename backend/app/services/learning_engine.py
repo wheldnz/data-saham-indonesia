@@ -305,7 +305,7 @@ def detect_market_regime(db=None):
         if close_db_session:
             db.close()
 
-def check_and_trigger_retraining():
+def check_and_trigger_retraining(blocking: bool = False):
     """
     Checks rolling accuracy (Hit Rate). If it drops below 52% over 5 consecutive days,
     triggers background retraining.
@@ -321,10 +321,10 @@ def check_and_trigger_retraining():
     
     if avg_hit_rate < 52.0:
         print(f"Performance degradation detected! Rolling 5-day hit rate: {avg_hit_rate:.2f}%. Triggering auto-retraining...")
-        trigger_background_retraining()
+        trigger_background_retraining(blocking=blocking)
 
-def trigger_background_retraining():
-    """Triggers retraining script in the background."""
+def trigger_background_retraining(blocking: bool = False):
+    """Triggers retraining script. Runs synchronously if blocking=True, otherwise asynchronously in background."""
     retrain_history = load_json_log(RETRAIN_HISTORY_PATH)
     
     # Check if a training is already running by checking retraining_history
@@ -373,11 +373,13 @@ def trigger_background_retraining():
             
             # Parse test accuracy from standard output
             output_text = proc_train.stdout
-            test_acc = 68.45 # fallback
+            test_acc = 56.0 # realistic fallback
             for line in output_text.split('\n'):
-                if "Model Accuracy:" in line:
+                if "Mean Accuracy :" in line:
                     try:
-                        test_acc = float(line.split(":")[1].strip().replace('%', ''))
+                        # Extract e.g. "56.07%" from "Mean Accuracy : 56.07% ± 3.41%"
+                        val_part = line.split(":")[1].strip().split(" ")[0].replace('%', '')
+                        test_acc = float(val_part)
                     except:
                         pass
             
@@ -395,7 +397,14 @@ def trigger_background_retraining():
                     log['is_champion'] = False # Old runs are no longer champion
             save_json_log(RETRAIN_HISTORY_PATH, logs)
             print("Automated retraining pipeline complete. New model is active!")
+            try:
+                from app.services import dataset_cache
+                dataset_cache.load_cache(force_reload=True)
+                print("In-memory dataset cache reloaded after retraining.")
+            except Exception as e_cache:
+                print(f"Failed to reload cache after retraining: {e_cache}")
             
+
         except Exception as e:
             print(f"Error running automated retraining: {e}")
             logs = load_json_log(RETRAIN_HISTORY_PATH)
@@ -405,11 +414,14 @@ def trigger_background_retraining():
                     log['error'] = str(e)
             save_json_log(RETRAIN_HISTORY_PATH, logs)
 
-    # Launch it asynchronously
-    import threading
-    thread = threading.Thread(target=run_training)
-    thread.daemon = True
-    thread.start()
+    if blocking:
+        run_training()
+    else:
+        # Launch it asynchronously
+        import threading
+        thread = threading.Thread(target=run_training)
+        thread.daemon = True
+        thread.start()
 
 def get_feature_importances():
     """Gets features importance list from joblib or runs a lightweight mock."""

@@ -13,6 +13,9 @@ function App() {
   const [selectedTicker, setSelectedTicker] = useState(null)
   const [backtestData, setBacktestData] = useState(null)
   const [isBacktesting, setIsBacktesting] = useState(false)
+  const [predictionMinLiquidity, setPredictionMinLiquidity] = useState("1000000000")
+  const [backtestMinLiquidity, setBacktestMinLiquidity] = useState("1000000000")
+  const [screenerBandarologi, setScreenerBandarologi] = useState("all")
 
   
   // Watchlist & Scoring state variables
@@ -71,7 +74,27 @@ function App() {
   // Bandarologi state variables
   const [bandarData, setBandarData] = useState(null)
 
-
+  // Adaptive / Regime-Aware state variables
+  const [adaptivePredictions, setAdaptivePredictions] = useState([])
+  const [adaptiveHorizon, setAdaptiveHorizon] = useState("T+1")
+  const [adaptiveMinLiquidity, setAdaptiveMinLiquidity] = useState("1000000000")
+  const [adaptiveBacktestMinLiquidity, setAdaptiveBacktestMinLiquidity] = useState("1000000000")
+  const [adaptiveRegime, setAdaptiveRegime] = useState({ regime: "Loading...", ihsg_trend: 1.0, market_breadth: 50.0, ihsg_volatility: 1.0 })
+  const [screenerAdaptiveBandarologi, setScreenerAdaptiveBandarologi] = useState("all")
+  const [screenerAdaptiveSearch, setScreenerAdaptiveSearch] = useState("")
+  const [showAdaptiveInfo, setShowAdaptiveInfo] = useState(true)
+  
+  const [adaptiveBacktestStrategy, setAdaptiveBacktestStrategy] = useState("T1_blended_top5")
+  const [adaptiveBacktestCapital, setAdaptiveBacktestCapital] = useState("100000000")
+  const [adaptiveBacktestSl, setAdaptiveBacktestSl] = useState("3.0")
+  const [adaptiveBacktestTp, setAdaptiveBacktestTp] = useState("6.0")
+  const [adaptiveBacktestDays, setAdaptiveBacktestDays] = useState(100)
+  const [adaptiveBacktestMaxPositions, setAdaptiveBacktestMaxPositions] = useState("5")
+  const [adaptiveBacktestDynamicSizing, setAdaptiveBacktestDynamicSizing] = useState(true)
+  const [adaptiveBacktestProbThreshold, setAdaptiveBacktestProbThreshold] = useState("0.55")
+  const [adaptiveBacktestData, setAdaptiveBacktestData] = useState(null)
+  const [isAdaptiveBacktesting, setIsAdaptiveBacktesting] = useState(false)
+  const [adaptiveBacktestSearch, setAdaptiveBacktestSearch] = useState("")
 
   const chartContainerRef = useRef()
   const chartRef = useRef(null)
@@ -89,13 +112,22 @@ function App() {
     return () => clearInterval(interval)
   }, [status.is_running])
 
-  // Initial load
+  // Initial load (predictions fetched via predictionMinLiquidity/predictionHorizon useEffect)
   useEffect(() => {
-    fetchPredictions()
     fetchStatus()
     fetchWatchlists()
-
+    fetchAdaptiveRegime()
   }, [])
+
+  // Fetch predictions when horizon or liquidity filter changes
+  useEffect(() => {
+    fetchPredictions(predictionHorizon, predictionMinLiquidity);
+  }, [predictionHorizon, predictionMinLiquidity]);
+
+  // Fetch adaptive predictions when horizon or liquidity filter changes
+  useEffect(() => {
+    fetchAdaptivePredictions(adaptiveHorizon, adaptiveMinLiquidity);
+  }, [adaptiveHorizon, adaptiveMinLiquidity]);
 
 
 
@@ -362,14 +394,76 @@ function App() {
       fetchLearningData()
     } else if (activeTab === 'portfolio') {
       fetchPortfolio()
+    } else if (activeTab === 'adaptive') {
+      fetchAdaptivePredictions()
+      fetchAdaptiveRegime()
     }
   }, [activeTab])
 
-  const fetchPredictions = async (horizon = predictionHorizon) => {
+  const fetchAdaptivePredictions = async (horizon = adaptiveHorizon, liquidity = adaptiveMinLiquidity) => {
     try {
-      let endpoint = 'http://localhost:8000/api/predictions';
+      let endpoint = `http://localhost:8000/api/predictions/adaptive?min_liquidity=${liquidity}`;
+      if (horizon === 'T+1 Tech' || horizon === 'T+3 Tech') {
+        endpoint = `http://localhost:8000/api/predictions/adaptive/tech?min_liquidity=${liquidity}`;
+      }
+      const res = await fetch(endpoint)
+      const data = await res.json()
+      
+      // Frontend sorting based on selected horizon
+      let predictions = data.data || [];
+      predictions.sort((a, b) => {
+        if (horizon === 'T+3' || horizon === 'T+3 Tech') {
+          const valA = parseFloat(a.prob_up_t3) || 0;
+          const valB = parseFloat(b.prob_up_t3) || 0;
+          return valB - valA;
+        } else {
+          const valA = parseFloat(a.prob_up) || 0;
+          const valB = parseFloat(b.prob_up) || 0;
+          return valB - valA;
+        }
+      });
+      
+      setAdaptivePredictions(predictions)
+      if (predictions.length > 0 && !selectedTicker && activeTab === 'adaptive') {
+        setSelectedTicker(predictions[0].ticker)
+      }
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const fetchAdaptiveRegime = async () => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/regime/latest`)
+      const data = await res.json()
+      setAdaptiveRegime(data)
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const handleRunAdaptiveBacktest = async () => {
+    setIsAdaptiveBacktesting(true);
+    try {
+      const res = await fetch(`http://localhost:8000/api/backtest/adaptive?days=${adaptiveBacktestDays}&capital=${adaptiveBacktestCapital}&strategy=${adaptiveBacktestStrategy}&sl=${adaptiveBacktestSl}&tp=${adaptiveBacktestTp}&max_positions=${adaptiveBacktestMaxPositions}&min_liquidity=${adaptiveBacktestMinLiquidity}&dynamic_sizing=${adaptiveBacktestDynamicSizing}&prob_threshold=${adaptiveBacktestProbThreshold}`);
+      const data = await res.json();
+      if (!data.error) {
+        setAdaptiveBacktestData(data);
+      } else {
+        alert("Gagal menjalankan backtest: " + data.error);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Terjadi kesalahan koneksi saat menjalankan backtest.");
+    }
+    setIsAdaptiveBacktesting(false);
+  }
+
+  const fetchPredictions = async (horizon = predictionHorizon, liquidity = predictionMinLiquidity) => {
+    try {
+      let endpoint = `http://localhost:8000/api/predictions?min_liquidity=${liquidity}`;
       if (horizon === 'T+1 Tech') {
-        endpoint = 'http://localhost:8000/api/predictions/tech';
+        endpoint = `http://localhost:8000/api/predictions/tech?min_liquidity=${liquidity}`;
       }
       const res = await fetch(endpoint)
       const data = await res.json()
@@ -419,7 +513,7 @@ function App() {
   const handleRunBacktest = async () => {
     setIsBacktesting(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/backtest?days=${backtestDays}&capital=${backtestCapital}&strategy=${backtestStrategy}&sl=${backtestSl}&tp=${backtestTp}&max_positions=${backtestMaxPositions}`);
+      const res = await fetch(`http://localhost:8000/api/backtest?days=${backtestDays}&capital=${backtestCapital}&strategy=${backtestStrategy}&sl=${backtestSl}&tp=${backtestTp}&max_positions=${backtestMaxPositions}&min_liquidity=${backtestMinLiquidity}`);
       const data = await res.json();
       if (!data.error) {
         setBacktestData(data);
@@ -498,7 +592,7 @@ function App() {
             }
           }
           attempts++
-          if (attempts > 180) {
+          if (attempts > 450) { // 15 minutes timeout (450 * 2s)
             clearInterval(interval)
             setRetrainStatus("Retraining timeout.")
             setIsRetraining(false)
@@ -815,11 +909,20 @@ function App() {
         >
           📈 BACKTEST SIMULATOR
         </button>
+        <button 
+          className={`tab-button ${activeTab === 'adaptive' ? 'active' : ''}`}
+          onClick={() => {
+            setActiveTab('adaptive');
+            setSelectedTicker(null);
+          }}
+        >
+          🤖 ADAPTIVE AI (REGIME)
+        </button>
       </div>
 
       <div className="dashboard">
         {/* Controls Panel */}
-        {activeTab !== 'learning' && activeTab !== 'portfolio' && activeTab !== 'backtest' && (
+        {activeTab !== 'learning' && activeTab !== 'portfolio' && activeTab !== 'backtest' && activeTab !== 'adaptive' && (
           <div className="glass-panel controls">
             <h2>Engine Controls</h2>
             <div className="status-container">
@@ -881,10 +984,7 @@ function App() {
                     border: '1px solid rgba(255,255,255,0.1)',
                     color: '#fff'
                   }}
-                  onClick={() => {
-                    setPredictionHorizon('T+1');
-                    fetchPredictions('T+1');
-                  }}
+                  onClick={() => setPredictionHorizon('T+1')}
                 >
                   T+1 (Teknikal + Bandar)
                 </button>
@@ -900,10 +1000,7 @@ function App() {
                     border: '1px solid rgba(255,255,255,0.1)',
                     color: '#fff'
                   }}
-                  onClick={() => {
-                    setPredictionHorizon('T+1 Tech');
-                    fetchPredictions('T+1 Tech');
-                  }}
+                  onClick={() => setPredictionHorizon('T+1 Tech')}
                 >
                   T+1 (Murni Teknikal)
                 </button>
@@ -919,10 +1016,7 @@ function App() {
                     border: '1px solid rgba(255,255,255,0.1)',
                     color: '#fff'
                   }}
-                  onClick={() => {
-                    setPredictionHorizon('T+3');
-                    fetchPredictions('T+3');
-                  }}
+                  onClick={() => setPredictionHorizon('T+3')}
                 >
                   Horizon T+3 (Swing 3-Hari)
                 </button>
@@ -1074,8 +1168,61 @@ function App() {
                 </div>
               </div>
 
+              {/* Min Liquidity Filter */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.85rem', color: '#ccc', fontWeight: '500' }}>Min Likuiditas Harian:</span>
+                <select 
+                  value={predictionMinLiquidity}
+                  onChange={(e) => setPredictionMinLiquidity(e.target.value)}
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '4px',
+                    padding: '0.35rem 0.6rem',
+                    color: '#fff',
+                    outline: 'none',
+                    fontSize: '0.85rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="0">Tanpa Filter</option>
+                  <option value="1000000000">&gt; Rp 1 Miliar (Default)</option>
+                  <option value="2000000000">&gt; Rp 2 Miliar</option>
+                  <option value="5000000000">&gt; Rp 5 Miliar</option>
+                  <option value="10000000000">&gt; Rp 10 Miliar</option>
+                </select>
+              </div>
+
+              {/* Bandarologi Filter */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.85rem', color: '#ccc', fontWeight: '500' }}>Bandarologi:</span>
+                <select 
+                  value={screenerBandarologi}
+                  onChange={(e) => setScreenerBandarologi(e.target.value)}
+                  style={{
+                    background: 'rgba(0, 0, 0, 0.3)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '4px',
+                    padding: '0.35rem 0.6rem',
+                    color: '#fff',
+                    outline: 'none',
+                    fontSize: '0.85rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="all">Semua Status</option>
+                  <option value="big_accum">Hanya Big Accumulation</option>
+                  <option value="accum">Hanya Accum & Big Accum</option>
+                  <option value="hidden_accum">Hanya Hidden Accumulation</option>
+                  <option value="distribution">Hanya Dist & Big Dist</option>
+                  <option value="big_dist">Hanya Big Distribution</option>
+                  <option value="hidden_dist">Hanya Hidden Distribution</option>
+                  <option value="foreign_inflow">Hanya Foreign Inflow</option>
+                </select>
+              </div>
+
               {/* Reset Button */}
-              {(maxPriceFilter || showOnlyFca || hideFca || screenerSearch) && (
+              {(maxPriceFilter || showOnlyFca || hideFca || screenerSearch || predictionMinLiquidity !== "1000000000" || screenerBandarologi !== "all") && (
                 <button
                   style={{
                     marginLeft: 'auto',
@@ -1093,6 +1240,8 @@ function App() {
                     setShowOnlyFca(false);
                     setHideFca(false);
                     setScreenerSearch("");
+                    setPredictionMinLiquidity("1000000000");
+                    setScreenerBandarologi("all");
                   }}
                 >
                   Reset Filter
@@ -1124,6 +1273,34 @@ function App() {
                 }
                 if (hideFca && parseFloat(row.close) <= 50) {
                   return false;
+                }
+                // Bandarologi filter
+                if (screenerBandarologi !== "all") {
+                  const status = row.bandarologi_status ? row.bandarologi_status.toLowerCase() : "";
+                  if (screenerBandarologi === "big_accum" && status !== "big accumulation") {
+                    return false;
+                  }
+                  if (screenerBandarologi === "accum" && status !== "accumulation" && status !== "big accumulation" && status !== "hidden accumulation") {
+                    return false;
+                  }
+                  if (screenerBandarologi === "distribution" && status !== "distribution" && status !== "big distribution" && status !== "hidden distribution") {
+                    return false;
+                  }
+                  if (screenerBandarologi === "big_dist" && status !== "big distribution") {
+                    return false;
+                  }
+                  if (screenerBandarologi === "hidden_accum" && status !== "hidden accumulation") {
+                    return false;
+                  }
+                  if (screenerBandarologi === "hidden_dist" && status !== "hidden distribution") {
+                    return false;
+                  }
+                  if (screenerBandarologi === "foreign_inflow") {
+                    const netForeign = parseFloat(row.net_foreign_value || 0);
+                    if (netForeign <= 0) {
+                      return false;
+                    }
+                  }
                 }
                 return true;
               });
@@ -2505,6 +2682,29 @@ function App() {
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>Min. Likuiditas Harian</label>
+                <select 
+                  value={backtestMinLiquidity}
+                  onChange={(e) => setBacktestMinLiquidity(e.target.value)}
+                  style={{
+                    padding: '0.6rem',
+                    background: 'rgba(0,0,0,0.4)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '6px',
+                    color: '#fff',
+                    outline: 'none',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <option value="0">Tanpa Filter</option>
+                  <option value="1000000000">&gt; Rp 1 Miliar (Default)</option>
+                  <option value="2000000000">&gt; Rp 2 Miliar</option>
+                  <option value="5000000000">&gt; Rp 5 Miliar</option>
+                  <option value="10000000000">&gt; Rp 10 Miliar</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
                 <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 'bold', color: '#94a3b8' }}>
                   <span>Periode Simulasi</span>
                   <span style={{ color: 'var(--primary-glow)' }}>{backtestDays} Hari</span>
@@ -2775,6 +2975,628 @@ function App() {
             </div>
           </div>
         )}
+
+        {activeTab === 'adaptive' && (
+          /* Adaptive AI Tab Panel */
+          <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: '1.5rem', animation: 'fadeIn 0.3s ease' }}>
+            {/* Regime Status Panel (A-D) */}
+            <div className="glass-panel" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1.5rem', padding: '1.5rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '1rem' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Poin A: Rezim Pasar</span>
+                <span style={{ fontSize: '1.15rem', fontWeight: 'bold', color: adaptiveRegime.ihsg_trend === 1 ? '#10b981' : '#ef4444' }}>
+                  {adaptiveRegime.ihsg_trend === 1 ? '📈 BULL / RISK-ON' : '📉 BEAR / RISK-OFF'}
+                </span>
+                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>Berdasarkan SMA50 dari Indeks IHSG</span>
+              </div>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '1rem' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Poin B: Volatilitas Pasar</span>
+                <span style={{ fontSize: '1.15rem', fontWeight: 'bold', color: adaptiveRegime.ihsg_volatility > 2.0 ? '#f59e0b' : '#3b82f6' }}>
+                  {adaptiveRegime.ihsg_volatility.toFixed(4)} %
+                </span>
+                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                  {adaptiveRegime.ihsg_volatility > 2.0 ? 'High Vol (Koreksi Lemah)' : 'Normal / Low Volatility'}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '1rem' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Poin C: Lebar Pasar (Breadth)</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#fff' }}>
+                    {adaptiveRegime.market_breadth}%
+                  </span>
+                  <div style={{ flexGrow: 1, height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div style={{ width: `${adaptiveRegime.market_breadth}%`, height: '100%', background: 'var(--primary-glow)', borderRadius: '4px' }}></div>
+                  </div>
+                </div>
+                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>Saham aktif trading di atas SMA20</span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Poin D: Proteksi Resiko</span>
+                <span style={{ fontSize: '1.15rem', fontWeight: 'bold', color: adaptiveRegime.ihsg_trend === 0 || adaptiveRegime.market_breadth < 35 ? '#f59e0b' : '#10b981' }}>
+                  {adaptiveRegime.ihsg_trend === 0 || adaptiveRegime.market_breadth < 35 ? '⚠️ DEFENSIVE (1 SLOT)' : '✅ FULL EXPOSURE'}
+                </span>
+                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>Sizing dinamis aktif di Backtester</span>
+              </div>
+            </div>
+            
+            {/* Detailed Explanation Panel for Points A-D */}
+            <div className="glass-panel" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setShowAdaptiveInfo(!showAdaptiveInfo)}>
+                <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '1.1rem', color: '#fff', fontFamily: 'Outfit' }}>
+                  <span>📘 Detail & Mekanisme Sistem Adaptive AI (Poin A - D)</span>
+                </h3>
+                <span style={{ fontSize: '0.85rem', color: 'var(--primary-glow)', fontWeight: 'bold' }}>
+                  {showAdaptiveInfo ? 'Sembunyikan Detail ▲' : 'Tampilkan Detail ▼'}
+                </span>
+              </div>
+              
+              {showAdaptiveInfo && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '0.5rem', animation: 'fadeIn 0.2s ease' }}>
+                  <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h4 style={{ margin: '0 0 0.5rem 0', color: '#00d2ff', fontSize: '0.9rem', fontWeight: 'bold' }}>Pilar A: Fitur Makro Baru (Macro Regime Features)</h4>
+                    <p style={{ margin: 0, fontSize: '0.8rem', color: '#cbd5e1', lineHeight: '1.4' }}>
+                      Mengintegrasikan kondisi makro bursa (Tren IHSG SMA50, Volatilitas IHSG ATR, dan Market Breadth harian) langsung sebagai fitur input dalam model pembelajaran mesin (XGBoost). Model secara cerdas belajar untuk menekan probabilitas naik saham-saham individu ketika bursa sedang dalam kondisi panik sistemik.
+                    </p>
+                  </div>
+                  
+                  <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h4 style={{ margin: '0 0 0.5rem 0', color: '#10b981', fontSize: '0.9rem', fontWeight: 'bold' }}>Pilar B: Batas Probabilitas Dinamis (Probability Cutoff)</h4>
+                    <p style={{ margin: 0, fontSize: '0.8rem', color: '#cbd5e1', lineHeight: '1.4' }}>
+                      Menghindari jebakan membeli saham dengan tingkat probabilitas rendah di tengah pasar bearish. Sistem mengizinkan setelan threshold (misal &ge; 55% / 60%). Jika tidak ada saham yang memenuhi batas probabilitas ini, sistem akan menolak belanja posisi baru dan memegang uang tunai (100% Cash) untuk proteksi modal.
+                    </p>
+                  </div>
+
+                  <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h4 style={{ margin: '0 0 0.5rem 0', color: '#a855f7', fontSize: '0.9rem', fontWeight: 'bold' }}>Pilar C: Pendekatan Model Khusus / Blended & Tech</h4>
+                    <p style={{ margin: 0, fontSize: '0.8rem', color: '#cbd5e1', lineHeight: '1.4' }}>
+                      Menyediakan dua variasi model terpisah untuk penyesuaian taktis: model <strong>Blended (ML + Bandarologi)</strong> untuk menyaring saham dengan akumulasi broker yang kuat, dan model <strong>Technical-Only</strong> untuk mendeteksi momentum pergerakan murni berdasarkan pola harga historis tanpa dipengaruhi data broker.
+                    </p>
+                  </div>
+
+                  <div style={{ background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                    <h4 style={{ margin: '0 0 0.5rem 0', color: '#f59e0b', fontSize: '0.9rem', fontWeight: 'bold' }}>Pilar D: Pengurangan Slot Portofolio Otomatis (Dynamic Sizing)</h4>
+                    <p style={{ margin: 0, fontSize: '0.8rem', color: '#cbd5e1', lineHeight: '1.4' }}>
+                      Ketika setelan Dynamic Sizing diaktifkan, mesin backtest secara dinamis mengubah kapasitas portofolio harian berdasarkan rezim pasar. Jika IHSG bearish (`ihsg_trend == 0`) atau market breadth &lt; 35%, kapasitas akan diciutkan otomatis menjadi hanya 1-2 slot defensif (menghindari diversifikasi berlebih di pasar crash).
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Split Panel: Left is Signals / Right is Backtester */}
+            <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: '1.5rem' }}>
+              
+              {/* Left: Predictions Table */}
+              <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                  <h2 style={{ margin: 0 }}>🔮 Adaptive AI Signals</h2>
+                  
+                  {/* Filters */}
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <select
+                      value={adaptiveHorizon}
+                      onChange={(e) => setAdaptiveHorizon(e.target.value)}
+                      style={{ padding: '0.4rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff', fontSize: '0.8rem', outline: 'none' }}
+                    >
+                      <option value="T+1">T+1 Blended (XGB + Bandar)</option>
+                      <option value="T+1 Tech">T+1 Technical-Only</option>
+                      <option value="T+3">T+3 Blended (XGB + Bandar)</option>
+                      <option value="T+3 Tech">T+3 Technical-Only</option>
+                    </select>
+
+                    <select
+                      value={adaptiveMinLiquidity}
+                      onChange={(e) => setAdaptiveMinLiquidity(e.target.value)}
+                      style={{ padding: '0.4rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff', fontSize: '0.8rem', outline: 'none' }}
+                    >
+                      <option value="0">Tanpa Filter</option>
+                      <option value="1000000000">&gt; 1M / hari (Default)</option>
+                      <option value="2000000000">&gt; 2M / hari</option>
+                      <option value="5000000000">&gt; 5M / hari</option>
+                      <option value="10000000000">&gt; 10M / hari</option>
+                    </select>
+
+                    <select
+                      value={screenerAdaptiveBandarologi}
+                      onChange={(e) => setScreenerAdaptiveBandarologi(e.target.value)}
+                      style={{ padding: '0.4rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff', fontSize: '0.8rem', outline: 'none' }}
+                    >
+                      <option value="all">Semua Bandarologi</option>
+                      <option value="accum">Accum & Big Accum</option>
+                      <option value="hidden_accum">Hidden Accum</option>
+                      <option value="hidden_dist">Hidden Dist</option>
+                    </select>
+
+                    <input
+                      type="text"
+                      placeholder="Cari Ticker..."
+                      value={screenerAdaptiveSearch}
+                      onChange={(e) => setScreenerAdaptiveSearch(e.target.value.toUpperCase())}
+                      style={{ padding: '0.4rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', color: '#fff', fontSize: '0.8rem', width: '100px', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+                <div className="table-responsive" style={{ maxHeight: '450px', overflowY: 'auto' }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>Ticker</th>
+                        <th>Harga</th>
+                        <th style={(adaptiveHorizon === 'T+1' || adaptiveHorizon === 'T+1 Tech') ? { color: 'var(--primary-glow)', textDecoration: 'underline' } : {}}>Prob T+1</th>
+                        <th style={(adaptiveHorizon === 'T+3' || adaptiveHorizon === 'T+3 Tech') ? { color: 'var(--primary-glow)', textDecoration: 'underline' } : {}}>Prob T+3</th>
+                        <th>Status Bandarologi</th>
+                        <th>Prediction Date</th>
+                        <th>Foreign Ratio</th>
+                        <th>Volume EOD</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        let filtered = adaptivePredictions.filter(p => {
+                          const tickerStr = p.ticker || p.Ticker || "";
+                          if (screenerAdaptiveSearch && !tickerStr.includes(screenerAdaptiveSearch)) return false;
+                          
+                          const bStatus = p.bandarologi_status || "";
+                          if (screenerAdaptiveBandarologi === 'accum') {
+                            return bStatus === 'Accumulation' || bStatus === 'Big Accumulation';
+                          } else if (screenerAdaptiveBandarologi === 'hidden_accum') {
+                            return bStatus === 'Hidden Accumulation';
+                          } else if (screenerAdaptiveBandarologi === 'hidden_dist') {
+                            return bStatus === 'Hidden Distribution';
+                          }
+                          return true;
+                        });
+
+                        if (filtered.length === 0) {
+                           return (
+                             <tr>
+                               <td colSpan="9" style={{ textAlign: 'center', color: '#8b9bb4', padding: '2rem' }}>
+                                 Tidak ada data prediksi adaptive.
+                               </td>
+                             </tr>
+                           );
+                        }
+
+                        return filtered.map((p, idx) => {
+                          const tickerStr = p.ticker || p.Ticker || "";
+                          const bStatus = p.bandarologi_status || "Neutral";
+                          const netForeign = p.net_foreign_value || 0;
+                          const totalVal = p.value || 0;
+                          const fRatio = totalVal > 0 ? (netForeign / totalVal * 100) : 0;
+                          
+                          const badgeClass = 
+                             bStatus === 'Big Accumulation' ? 'status-big-accumulation' :
+                             bStatus === 'Accumulation' ? 'status-accumulation' :
+                             bStatus === 'Hidden Accumulation' ? 'status-hidden-accumulation' :
+                             bStatus === 'Hidden Distribution' ? 'status-hidden-distribution' :
+                             bStatus.includes('Distribution') ? 'status-big-distribution' : 'status-neutral';
+
+                          return (
+                            <tr 
+                              key={idx}
+                              onClick={() => setSelectedTicker(tickerStr)}
+                              style={{ cursor: 'pointer', background: selectedTicker === tickerStr ? 'rgba(255,255,255,0.05)' : 'transparent' }}
+                            >
+                              <td><strong>{idx + 1}</strong></td>
+                              <td><span style={{ color: 'var(--primary-glow)', fontWeight: 'bold' }}>{tickerStr}</span></td>
+                              <td>Rp {(p.close || 0).toLocaleString('id-ID')}</td>
+                              <td style={{ color: (adaptiveHorizon === 'T+1' || adaptiveHorizon === 'T+1 Tech') ? '#10b981' : '#cbd5e1', fontWeight: 'bold' }}>
+                                {(() => {
+                                  const val = p.prob_up;
+                                  const rawVal = p.prob_up_raw;
+                                  const primary = (val * 100).toFixed(2) + "%";
+                                  const isBlended = (adaptiveHorizon === 'T+1' || adaptiveHorizon === 'T+3');
+                                  if (isBlended && rawVal !== undefined && Math.abs(rawVal - val) > 0.0001) {
+                                    const secondary = (rawVal * 100).toFixed(2) + "%";
+                                    return (
+                                      <span title={`Blended: ${primary}\nRaw ML: ${secondary}`}>
+                                        {primary} <span style={{ fontSize: '0.75rem', color: '#8b9bb4', fontWeight: 'normal' }}>({secondary})</span>
+                                      </span>
+                                    );
+                                  }
+                                  return primary;
+                                })()}
+                              </td>
+                              <td style={{ color: (adaptiveHorizon === 'T+3' || adaptiveHorizon === 'T+3 Tech') ? '#10b981' : '#cbd5e1', fontWeight: 'bold' }}>
+                                {(() => {
+                                  const val = p.prob_up_t3;
+                                  const rawVal = p.prob_up_t3_raw;
+                                  const primary = (val * 100).toFixed(2) + "%";
+                                  const isBlended = (adaptiveHorizon === 'T+1' || adaptiveHorizon === 'T+3');
+                                  if (isBlended && rawVal !== undefined && Math.abs(rawVal - val) > 0.0001) {
+                                    const secondary = (rawVal * 100).toFixed(2) + "%";
+                                    return (
+                                      <span title={`Blended: ${primary}\nRaw ML: ${secondary}`}>
+                                        {primary} <span style={{ fontSize: '0.75rem', color: '#8b9bb4', fontWeight: 'normal' }}>({secondary})</span>
+                                      </span>
+                                    );
+                                  }
+                                  return primary;
+                                })()}
+                              </td>
+                              <td>
+                                <span className={`status-badge ${badgeClass}`}>
+                                  {bStatus}
+                                </span>
+                              </td>
+                              <td style={{ color: '#cbd5e1', fontSize: '0.85rem' }}>
+                                {p.date || '-'}
+                              </td>
+                              <td style={{ color: fRatio > 0 ? '#10b981' : fRatio < 0 ? '#ef4444' : '#fff' }}>
+                                {fRatio > 0 ? '+' : ''}{fRatio.toFixed(1)}%
+                              </td>
+                              <td style={{ color: '#8b9bb4', fontSize: '0.8rem' }}>
+                                Rp {(totalVal / 1_000_000_000).toFixed(2)} M
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Right: Adaptive Backtester Form and Results */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <h3>📊 Adaptive Backtest Settings</h3>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8' }}>Strategi Model</label>
+                    <select 
+                      value={adaptiveBacktestStrategy}
+                      onChange={(e) => setAdaptiveBacktestStrategy(e.target.value)}
+                      style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', outline: 'none' }}
+                    >
+                      <option value="T1_blended_top5">T+1 Blended (XGB + Bandar)</option>
+                      <option value="T1_top5">T+1 Technical-Only</option>
+                      <option value="T3_top5">T+3 Swing Trend</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <label style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8' }}>Min. Likuiditas Harian</label>
+                    <select 
+                      value={adaptiveBacktestMinLiquidity}
+                      onChange={(e) => setAdaptiveBacktestMinLiquidity(e.target.value)}
+                      style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', outline: 'none', cursor: 'pointer' }}
+                    >
+                      <option value="0">Tanpa Filter</option>
+                      <option value="1000000000">&gt; Rp 1 Miliar (Default)</option>
+                      <option value="2000000000">&gt; Rp 2 Miliar</option>
+                      <option value="5000000000">&gt; Rp 5 Miliar</option>
+                      <option value="10000000000">&gt; Rp 10 Miliar</option>
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8' }}>Stop Loss (SL%)</label>
+                      <input 
+                        type="number" 
+                        step="0.5"
+                        value={adaptiveBacktestSl}
+                        onChange={(e) => setAdaptiveBacktestSl(e.target.value)}
+                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', outline: 'none' }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8' }}>Take Profit (TP%)</label>
+                      <input 
+                        type="number" 
+                        step="0.5"
+                        value={adaptiveBacktestTp}
+                        onChange={(e) => setAdaptiveBacktestTp(e.target.value)}
+                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', outline: 'none' }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8' }}>Maks. Posisi (Normal)</label>
+                      <select 
+                        value={adaptiveBacktestMaxPositions}
+                        onChange={(e) => setAdaptiveBacktestMaxPositions(e.target.value)}
+                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', outline: 'none' }}
+                      >
+                        <option value="1">1 Saham (100% modal)</option>
+                        <option value="2">2 Saham (50% modal)</option>
+                        <option value="3">3 Saham (33.3% modal)</option>
+                        <option value="4">4 Saham (25% modal)</option>
+                        <option value="5">5 Saham (20% modal)</option>
+                      </select>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                      <label style={{ fontSize: '0.75rem', fontWeight: 'bold', color: '#94a3b8' }}>Threshold Probabilitas</label>
+                      <select 
+                        value={adaptiveBacktestProbThreshold}
+                        onChange={(e) => setAdaptiveBacktestProbThreshold(e.target.value)}
+                        style={{ padding: '0.5rem', background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', color: '#fff', outline: 'none' }}
+                      >
+                        <option value="0.0">Tanpa Threshold</option>
+                        <option value="0.52">&ge; 52% Probabilitas</option>
+                        <option value="0.55">&ge; 55% (Rekomendasi)</option>
+                        <option value="0.58">&ge; 58% Probabilitas</option>
+                        <option value="0.60">&ge; 60% Probabilitas</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: '0.3rem 0' }}>
+                    <input 
+                      type="checkbox" 
+                      id="dynamicSizingCheckbox"
+                      checked={adaptiveBacktestDynamicSizing}
+                      onChange={(e) => setAdaptiveBacktestDynamicSizing(e.target.checked)}
+                      style={{ accentColor: 'var(--primary-glow)', width: '18px', height: '18px', cursor: 'pointer' }}
+                    />
+                    <label htmlFor="dynamicSizingCheckbox" style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#cbd5e1', cursor: 'pointer' }}>
+                      Aktifkan Dynamic Sizing (Proteksi Bearish)
+                    </label>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                    <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#94a3b8' }}>
+                      <span>Periode Simulasi</span>
+                      <span style={{ color: 'var(--primary-glow)' }}>{adaptiveBacktestDays} Hari</span>
+                    </label>
+                    <input 
+                      type="range" 
+                      min="20" 
+                      max="250" 
+                      step="10" 
+                      value={adaptiveBacktestDays}
+                      onChange={(e) => setAdaptiveBacktestDays(parseInt(e.target.value))}
+                      style={{ accentColor: 'var(--primary-glow)', cursor: 'pointer' }}
+                    />
+                  </div>
+
+                  <button 
+                    className={`btn-update ${isAdaptiveBacktesting ? 'running' : ''}`}
+                    onClick={handleRunAdaptiveBacktest}
+                    disabled={isAdaptiveBacktesting}
+                  >
+                    {isAdaptiveBacktesting ? 'RUNNING BACKTEST...' : 'RUN ADAPTIVE BACKTEST'}
+                  </button>
+                </div>
+
+                {/* Adaptive Backtest Results */}
+                {adaptiveBacktestData && (
+                  <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <h3>📈 Hasil Backtest Adaptive</h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                      <div className="stat-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: '6px', textAlign: 'center' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Total Return</span>
+                        <h4 style={{ fontSize: '1.25rem', margin: '0.2rem 0', color: adaptiveBacktestData.total_return_pct >= 0 ? '#10b981' : '#ef4444' }}>
+                          {adaptiveBacktestData.total_return_pct >= 0 ? '+' : ''}{adaptiveBacktestData.total_return_pct}%
+                        </h4>
+                      </div>
+                      <div className="stat-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: '6px', textAlign: 'center' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Win Rate</span>
+                        <h4 style={{ fontSize: '1.25rem', margin: '0.2rem 0', color: 'var(--primary-glow)' }}>
+                          {adaptiveBacktestData.win_rate}%
+                        </h4>
+                      </div>
+                      <div className="stat-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: '6px', textAlign: 'center' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Max Drawdown</span>
+                        <h4 style={{ fontSize: '1.25rem', margin: '0.2rem 0', color: '#ef4444' }}>
+                          {adaptiveBacktestData.max_drawdown_pct}%
+                        </h4>
+                      </div>
+                      <div className="stat-card" style={{ background: 'rgba(255,255,255,0.02)', padding: '0.75rem', borderRadius: '6px', textAlign: 'center' }}>
+                        <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Total Transaksi</span>
+                        <h4 style={{ fontSize: '1.25rem', margin: '0.2rem 0', color: '#fff' }}>
+                          {adaptiveBacktestData.total_trades}
+                        </h4>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+            </div>
+
+            {/* Adaptive Backtest Details (Chart & Logs) */}
+            {adaptiveBacktestData && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '0.5rem' }}>
+                
+                {/* Equity Curve Chart */}
+                <div className="glass-panel">
+                  <h2>Portfolio Growth vs IHSG Index Benchmark (Adaptive)</h2>
+                  {(() => {
+                    const equityCurve = adaptiveBacktestData.equity_curve || [];
+                    const benchmarkCurve = adaptiveBacktestData.benchmark_curve || [];
+                    const allValues = [...equityCurve.map(d => d.value), ...benchmarkCurve.map(d => d.value)];
+                    if (allValues.length === 0) return <div className="no-data">No chart data available.</div>;
+                    
+                    let minY = Math.min(...allValues);
+                    let maxY = Math.max(...allValues);
+                    const rangeY = maxY - minY;
+                    minY = Math.max(0, Math.floor(minY - rangeY * 0.05));
+                    maxY = Math.ceil(maxY + rangeY * 0.05);
+                    
+                    const width = 800;
+                    const height = 250;
+                    const padLeft = 85;
+                    const padRight = 20;
+                    const padTop = 15;
+                    const padBottom = 30;
+                    const cWidth = width - padLeft - padRight;
+                    const cHeight = height - padTop - padBottom;
+                    
+                    const getX = (idx, total) => padLeft + (idx / (total - 1)) * cWidth;
+                    const getY = (val) => height - padBottom - ((val - minY) / (maxY - minY)) * cHeight;
+                    
+                    let eqPath = '';
+                    equityCurve.forEach((d, idx) => {
+                      const x = getX(idx, equityCurve.length);
+                      const y = getY(d.value);
+                      eqPath += (idx === 0 ? 'M' : 'L') + ` ${x} ${y}`;
+                    });
+                    
+                    let bmPath = '';
+                    benchmarkCurve.forEach((d, idx) => {
+                      const x = getX(idx, benchmarkCurve.length);
+                      const y = getY(d.value);
+                      bmPath += (idx === 0 ? 'M' : 'L') + ` ${x} ${y}`;
+                    });
+                    
+                    const grids = [];
+                    const steps = 4;
+                    for (let i = 0; i <= steps; i++) {
+                      const val = minY + (i / steps) * (maxY - minY);
+                      const y = getY(val);
+                      grids.push(
+                        <g key={i}>
+                          <line x1={padLeft} y1={y} x2={width - padRight} y2={y} stroke="rgba(255, 255, 255, 0.05)" />
+                          <text x={padLeft - 10} y={y + 3} fill="#8b9bb4" fontSize="8" textAnchor="end">
+                            Rp {Math.round(val).toLocaleString('id-ID')}
+                          </text>
+                        </g>
+                      );
+                    }
+                    
+                    const dates = [];
+                    const interval = Math.max(1, Math.floor(equityCurve.length / 5));
+                    equityCurve.forEach((d, idx) => {
+                      if (idx % interval === 0 || idx === equityCurve.length - 1) {
+                        const x = getX(idx, equityCurve.length);
+                        dates.push(
+                          <text key={idx} x={x} y={height - 5} fill="#8b9bb4" fontSize="8" textAnchor="middle">
+                            {d.time.substring(5)}
+                          </text>
+                        );
+                      }
+                    });
+                    
+                    return (
+                      <div style={{ height: '270px', width: '100%', position: 'relative', marginTop: '1rem' }}>
+                        <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet">
+                          {grids}
+                          {dates}
+                          
+                          {/* IHSG Line */}
+                          <path d={bmPath} fill="none" stroke="rgba(168, 85, 247, 0.2)" strokeWidth="4" />
+                          <path d={bmPath} fill="none" stroke="#a855f7" strokeWidth="1.5" />
+                          
+                          {/* Portfolio Line */}
+                          <path d={eqPath} fill="none" stroke="rgba(0, 210, 255, 0.3)" strokeWidth="5" />
+                          <path d={eqPath} fill="none" stroke="var(--primary-glow)" strokeWidth="2" />
+                        </svg>
+                        
+                        <div style={{ display: 'flex', gap: '1.5rem', justifyContent: 'center', fontSize: '0.75rem', marginTop: '0.2rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'var(--primary-glow)' }} />
+                            <span style={{ color: '#fff' }}>Portfolio Equity ({adaptiveBacktestData.total_return_pct >= 0 ? '+' : ''}{adaptiveBacktestData.total_return_pct}%)</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#a855f7' }} />
+                            <span style={{ color: '#fff' }}>IHSG Benchmark Index</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Simulated Trades Table */}
+                <div className="glass-panel">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.8rem' }}>
+                    <h2 style={{ margin: 0 }}>Simulated Trade Logs (Adaptive)</h2>
+                    <input 
+                      type="text"
+                      value={adaptiveBacktestSearch}
+                      onChange={(e) => setAdaptiveBacktestSearch(e.target.value)}
+                      placeholder="Cari Ticker (cth: BBRI)..."
+                      style={{
+                        padding: '0.4rem 0.8rem',
+                        background: 'rgba(0,0,0,0.3)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        borderRadius: '6px',
+                        color: '#fff',
+                        outline: 'none',
+                        fontSize: '0.85rem',
+                        width: '200px'
+                      }}
+                    />
+                  </div>
+
+                  {(() => {
+                    const filteredTrades = adaptiveBacktestSearch.trim() !== "" 
+                      ? (adaptiveBacktestData.trades || []).filter(t => t.ticker.toUpperCase().includes(adaptiveBacktestSearch.trim().toUpperCase()))
+                      : (adaptiveBacktestData.trades || []);
+                      
+                    if (filteredTrades.length === 0) {
+                      return <div className="no-data">Tidak ada transaksi yang cocok dengan filter pencarian.</div>;
+                    }
+                    
+                    return (
+                      <div className="table-responsive" style={{ maxHeight: '350px', overflowY: 'auto' }}>
+                        <table className="pred-table" style={{ fontSize: '0.85rem' }}>
+                          <thead>
+                            <tr>
+                              <th>Ticker</th>
+                              <th>Entry Date</th>
+                              <th>Exit Date</th>
+                              <th>Entry Price</th>
+                              <th>Exit Price</th>
+                              <th>Return (%)</th>
+                              <th>Exit Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredTrades.map((t, idx) => (
+                              <tr key={idx}>
+                                <td className="ticker-col">{t.ticker}</td>
+                                <td>{t.entry_date}</td>
+                                <td>{t.exit_date}</td>
+                                <td>Rp {Number(t.entry_price).toLocaleString('id-ID')}</td>
+                                <td>Rp {Number(t.exit_price).toLocaleString('id-ID')}</td>
+                                <td style={{ color: t.return_pct >= 0 ? '#10b981' : '#ef4444', fontWeight: 'bold' }}>
+                                  <div>{t.return_pct >= 0 ? '+' : ''}{t.return_pct}%</div>
+                                  {t.profit_nominal !== undefined && (
+                                    <div style={{ fontSize: '0.75rem', fontWeight: 'normal', opacity: 0.85, marginTop: '2px' }}>
+                                      {t.profit_nominal >= 0 ? '+' : ''}Rp {Math.round(t.profit_nominal).toLocaleString('id-ID')}
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  <span className={`badge ${
+                                    t.status === 'TP' ? 'badge-bullish' : 
+                                    t.status === 'SL' ? 'badge-bearish' : 
+                                    t.status === 'EXPIRED' ? 'badge-expired' : 'badge-neutral'
+                                  }`} style={{
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.7rem',
+                                    fontWeight: 'bold',
+                                    background: t.status === 'TP' ? 'rgba(16, 185, 129, 0.15)' : t.status === 'SL' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                                    color: t.status === 'TP' ? '#10b981' : t.status === 'SL' ? '#ef4444' : '#3b82f6',
+                                    border: t.status === 'TP' ? '1px solid rgba(16, 185, 129, 0.3)' : t.status === 'SL' ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(59, 130, 246, 0.3)'
+                                  }}>
+                                    {t.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Chart Panel */}
@@ -2843,6 +3665,20 @@ function App() {
                     {bandarData?.net_foreign_value !== undefined 
                       ? `${(bandarData.net_foreign_value / 1_000_000_000).toFixed(2)}B`
                       : '0.00B'
+                    }
+                  </div>
+                </div>
+                <div style={{ flex: 1, background: 'rgba(234, 179, 8, 0.04)', padding: '0.6rem', borderRadius: '6px', textAlign: 'center' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Foreign Ratio</div>
+                  <div style={{ 
+                    fontWeight: 'bold', 
+                    color: (bandarData?.foreign_ratio || 0) >= 0 ? '#eab308' : '#f97316', 
+                    fontSize: '1.1rem', 
+                    marginTop: '0.2rem' 
+                  }}>
+                    {bandarData?.foreign_ratio !== undefined 
+                      ? `${(bandarData.foreign_ratio * 100).toFixed(1)}%`
+                      : '0.0%'
                     }
                   </div>
                 </div>
