@@ -32,12 +32,18 @@ from app.db.database import SessionLocal, Base, engine
 from app.models.watchlist import Watchlist, WatchlistItem, WatchlistScore
 from app.models.stock import Stock
 from app.models.market_data import DailyOHLCV, BrokerSummary
-from app.models.portfolio import PortfolioTransaction
+from app.models.portfolio import PortfolioTransaction, PortfolioConfig
 from app.services.scoring_service import calculate_all_scores
 
 # Auto-create portfolio tables if not exists
 Base.metadata.create_all(bind=engine)
 
+
+class PortfolioConfigResponse(BaseModel):
+    initial_cash: float
+
+class PortfolioConfigRequest(BaseModel):
+    initial_cash: float
 
 # Pydantic models for request bodies
 class WatchlistCreate(BaseModel):
@@ -1082,7 +1088,8 @@ def get_portfolio():
         txs = db.query(PortfolioTransaction).order_by(PortfolioTransaction.date.asc()).all()
         
         # Calculate cash and holdings
-        initial_cash = 100000000.0  # Rp 100,000,000
+        portfolio_config = db.query(PortfolioConfig).first()
+        initial_cash = portfolio_config.initial_cash if portfolio_config else 100000000.0
         cash = initial_cash
         
         holdings = {}
@@ -1249,7 +1256,9 @@ def execute_trade(req: TradeRequest):
         
         # Calculate cash and holdings to validate trade
         txs = db.query(PortfolioTransaction).all()
-        cash = 100000000.0
+        portfolio_config = db.query(PortfolioConfig).first()
+        initial_cash = portfolio_config.initial_cash if portfolio_config else 100000000.0
+        cash = initial_cash
         held_qty = 0
         
         for tx in txs:
@@ -1402,6 +1411,36 @@ def compare_stocks(tickers: str):
             })
             
         return {"data": sanitize_json_data(results)}
+    finally:
+        db.close()
+
+
+@app.get("/api/portfolio/config", response_model=PortfolioConfigResponse)
+def get_portfolio_config():
+    db = SessionLocal()
+    try:
+        config = db.query(PortfolioConfig).first()
+        if not config:
+            config = PortfolioConfig(initial_cash=100000000.0)
+            db.add(config)
+            db.commit()
+            db.refresh(config)
+        return {"initial_cash": config.initial_cash}
+    finally:
+        db.close()
+
+@app.post("/api/portfolio/config")
+def update_portfolio_config(req: PortfolioConfigRequest):
+    db = SessionLocal()
+    try:
+        config = db.query(PortfolioConfig).first()
+        if not config:
+            config = PortfolioConfig(initial_cash=req.initial_cash)
+            db.add(config)
+        else:
+            config.initial_cash = req.initial_cash
+        db.commit()
+        return {"message": "Modal awal berhasil diperbarui", "initial_cash": config.initial_cash}
     finally:
         db.close()
 

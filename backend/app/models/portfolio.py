@@ -15,3 +15,9 @@ class PortfolioTransaction(Base):
     notes = Column(Text, nullable=True)
     strategy = Column(String(50), nullable=True)
     emotion = Column(String(50), nullable=True)
+
+class PortfolioConfig(Base):
+    __tablename__ = "portfolio_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    initial_cash = Column(Float, default=100000000.0, nullable=False)

@@ -59,7 +59,7 @@ function App() {
   const [showTradeModal, setShowTradeModal] = useState(false)
   const [tradeAction, setTradeAction] = useState("BUY")
   const [tradeTicker, setTradeTicker] = useState("")
-  const [tradeQty, setTradeQty] = useState(100)
+  const [tradeQty, setTradeQty] = useState(1)
   const [tradePrice, setTradePrice] = useState(0)
   const [tradeStrategy, setTradeStrategy] = useState("Breakout")
   const [tradeEmotion, setTradeEmotion] = useState("Neutral")
@@ -326,7 +326,7 @@ function App() {
         body: JSON.stringify({
           ticker: tradeTicker,
           action: tradeAction,
-          quantity: parseInt(tradeQty),
+          quantity: parseInt(tradeQty) * 100, // convert lot to shares
           price: parseFloat(tradePrice),
           notes: tradeNotes,
           strategy: tradeStrategy,
@@ -371,6 +371,37 @@ function App() {
     } catch (err) {
       console.error(err);
       alert("Gagal menghubungi server.");
+    }
+  }
+
+  const handleEditStartingCapital = async () => {
+    try {
+      const res = await fetch('http://localhost:8000/api/portfolio/config');
+      const data = await res.json();
+      const currentVal = data.initial_cash || 100000000;
+      const newValStr = window.prompt("Masukkan nominal modal awal baru (IDR):", currentVal);
+      if (newValStr === null) return;
+      const newVal = parseFloat(newValStr);
+      if (isNaN(newVal) || newVal <= 0) {
+        alert("Nominal modal harus berupa angka positif!");
+        return;
+      }
+      
+      const postRes = await fetch('http://localhost:8000/api/portfolio/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initial_cash: newVal })
+      });
+      const postData = await postRes.json();
+      if (postRes.status === 200) {
+        alert("Modal awal berhasil diperbarui!");
+        fetchPortfolio();
+      } else {
+        alert(postData.detail || "Gagal memperbarui modal awal.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Gagal memperbarui modal awal.");
     }
   }
 
@@ -922,7 +953,7 @@ function App() {
 
       <div className="dashboard">
         {/* Controls Panel */}
-        {activeTab !== 'learning' && activeTab !== 'portfolio' && activeTab !== 'backtest' && activeTab !== 'adaptive' && (
+        {activeTab !== 'learning' && activeTab !== 'portfolio' && activeTab !== 'backtest' && activeTab !== 'adaptive' && activeTab !== 'watchlist' && (
           <div className="glass-panel controls">
             <h2>Engine Controls</h2>
             <div className="status-container">
@@ -1400,7 +1431,7 @@ function App() {
                                   e.stopPropagation();
                                   setTradeTicker(row.ticker);
                                   setTradeAction("BUY");
-                                  setTradeQty(100);
+                                  setTradeQty(1);
                                   setTradePrice(row.close || 0);
                                   setTradeStrategy("Breakout");
                                   setTradeEmotion("Neutral");
@@ -1424,7 +1455,7 @@ function App() {
 
         {activeTab === 'watchlist' && (
           /* Watchlist Panel */
-          <div className="glass-panel predictions" style={{ animation: 'fadeIn 0.3s ease' }}>
+          <div className="glass-panel predictions" style={{ gridColumn: 'span 2', animation: 'fadeIn 0.3s ease' }}>
             <div className="watchlist-header">
               <div className="watchlist-select-area">
                 <select 
@@ -1785,7 +1816,7 @@ function App() {
                                         e.stopPropagation();
                                         setTradeTicker(item.ticker);
                                         setTradeAction("BUY");
-                                        setTradeQty(100);
+                                        setTradeQty(1);
                                         setTradePrice(item.price || 0);
                                         setTradeStrategy("Breakout");
                                         setTradeEmotion("Neutral");
@@ -1803,7 +1834,7 @@ function App() {
                                         e.stopPropagation();
                                         setTradeTicker(item.ticker);
                                         setTradeAction("SELL");
-                                        setTradeQty(100);
+                                        setTradeQty(1);
                                         setTradePrice(item.price || 0);
                                         setTradeStrategy("Breakout");
                                         setTradeEmotion("Neutral");
@@ -2029,7 +2060,16 @@ function App() {
                   </div>
                 </div>
                 <div className="glass-panel" style={{ textAlign: 'center', padding: '1.2rem' }}>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>CASH BALANCE (IDR)</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.4rem' }}>
+                    CASH BALANCE (IDR)
+                    <button 
+                      onClick={handleEditStartingCapital}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--primary-glow)', fontSize: '0.85rem', padding: 0, display: 'flex', alignItems: 'center' }}
+                      title="Ubah Modal Awal"
+                    >
+                      ✏️
+                    </button>
+                  </div>
                   <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#fff', marginTop: '0.5rem' }}>
                     Rp {portfolio.cash?.toLocaleString('id-ID')}
                   </div>
@@ -2080,7 +2120,7 @@ function App() {
                       <thead>
                         <tr>
                           <th>Ticker</th>
-                          <th>Shares</th>
+                          <th>Lot</th>
                           <th>Avg Buy</th>
                           <th>Price</th>
                           <th>Market Value</th>
@@ -2097,7 +2137,7 @@ function App() {
                                 {item.name}
                               </div>
                             </td>
-                            <td>{item.quantity?.toLocaleString('id-ID')}</td>
+                            <td>{(item.quantity / 100)?.toLocaleString('id-ID')}</td>
                             <td>Rp {item.avg_buy_price?.toLocaleString('id-ID')}</td>
                             <td>Rp {item.current_price?.toLocaleString('id-ID')}</td>
                             <td>Rp {item.market_value?.toLocaleString('id-ID')}</td>
@@ -2113,7 +2153,7 @@ function App() {
                                   onClick={() => {
                                     setTradeTicker(item.ticker);
                                     setTradeAction("BUY");
-                                    setTradeQty(100);
+                                    setTradeQty(1);
                                     setTradePrice(item.current_price || 0);
                                     setTradeStrategy("Breakout");
                                     setTradeEmotion("Neutral");
@@ -2130,7 +2170,7 @@ function App() {
                                   onClick={() => {
                                     setTradeTicker(item.ticker);
                                     setTradeAction("SELL");
-                                    setTradeQty(100);
+                                    setTradeQty(1);
                                     setTradePrice(item.current_price || 0);
                                     setTradeStrategy("Breakout");
                                     setTradeEmotion("Neutral");
@@ -2164,7 +2204,7 @@ function App() {
                           <th>Tanggal</th>
                           <th>Saham / Order</th>
                           <th>Harga</th>
-                          <th>Jumlah</th>
+                          <th>Jumlah (Lot)</th>
                           <th>Total Nilai</th>
                           <th>Strategi / Setup</th>
                           <th>Kondisi Emosi</th>
@@ -2180,7 +2220,7 @@ function App() {
                               {tx.action === 'BUY' ? 'BELI' : 'JUAL'} {tx.ticker}
                             </td>
                             <td>Rp {tx.price?.toLocaleString('id-ID')}</td>
-                            <td>{tx.quantity?.toLocaleString('id-ID')}</td>
+                            <td>{(tx.quantity / 100)?.toLocaleString('id-ID')}</td>
                             <td>Rp {(tx.price * tx.quantity)?.toLocaleString('id-ID')}</td>
                             <td>
                               <span className="badge" style={{ background: 'rgba(255,255,255,0.05)', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }}>
@@ -3802,13 +3842,13 @@ function App() {
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Jumlah Lembar (Shares)</label>
+                  <label className="form-label">Jumlah (Lot)</label>
                   <input 
                     type="number" 
                     className="form-input" 
                     min="1"
                     required
-                    placeholder="Jumlah..."
+                    placeholder="Jumlah lot..."
                     value={tradeQty}
                     onChange={(e) => setTradeQty(parseInt(e.target.value) || 0)}
                   />
